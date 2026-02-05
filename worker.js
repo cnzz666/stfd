@@ -1,1465 +1,695 @@
-﻿addEventListener('fetch', event => {
-  const url = new URL(event.request.url);
-  thisProxyServerUrlHttps = `${url.protocol}//${url.hostname}/`;
-  thisProxyServerUrl_hostOnly = url.host;
+﻿// Cloudflare Worker 端口扫描后端
+addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
 
-
-const str = "/";
-const lastVisitProxyCookie = "__PROXY_VISITEDSITE__";
-const passwordCookieName = "__PROXY_PWD__";
-const proxyHintCookieName = "__PROXY_HINT__";
-const password = "";
-const showPasswordPage = false;
-const replaceUrlObj = "__location__yproxy__";
-
-var thisProxyServerUrlHttps;
-var thisProxyServerUrl_hostOnly;
-// const CSSReplace = ["https://", "http://"];
-const proxyHintInjection = ``;
-
-
-const httpRequestInjection = `
-
-
-//---***========================================***---information---***========================================***---
-var nowURL = new URL(window.location.href);
-var proxy_host = nowURL.host; //代理的host - proxy.com
-var proxy_protocol = nowURL.protocol; //代理的protocol
-var proxy_host_with_schema = proxy_protocol + "//" + proxy_host + "/"; //代理前缀 https://proxy.com/
-var original_website_url_str = window.location.href.substring(proxy_host_with_schema.length); //被代理的【完整】地址 如：https://example.com/1?q#1
-var original_website_url = new URL(original_website_url_str);
-
-var original_website_host = original_website_url_str.substring(original_website_url_str.indexOf("://") + "://".length);
-original_website_host = original_website_host.split('/')[0]; //被代理的Host proxied_website.com
-
-var original_website_host_with_schema = original_website_url_str.substring(0, original_website_url_str.indexOf("://")) + "://" + original_website_host + "/"; //加上https的被代理的host， https://proxied_website.com/
-
-
-//---***========================================***---通用func---***========================================***---
-function changeURL(relativePath){
-  if(relativePath == null) return null;
-
-  relativePath_str = "";
-  if (relativePath instanceof URL) {
-    relativePath_str = relativePath.href;
-  }else{
-    relativePath_str = relativePath.toString();
-  }
-
-
-try{
-if(relativePath_str.startsWith("data:") || relativePath_str.startsWith("mailto:") || relativePath_str.startsWith("javascript:") || relativePath_str.startsWith("chrome") || relativePath_str.startsWith("edge")) return relativePath_str;
-}catch{
-console.log("Change URL Error **************************************:");
-console.log(relativePath_str);
-console.log(typeof relativePath_str);
-
-return relativePath_str;
-}
-
-
-// for example, blob:https://example.com/, we need to remove blob and add it back later
-var pathAfterAdd = "";
-
-if(relativePath_str.startsWith("blob:")){
-pathAfterAdd = "blob:";
-relativePath_str = relativePath_str.substring("blob:".length);
-}
-
-
-try{
-if(relativePath_str.startsWith(proxy_host_with_schema)) relativePath_str = relativePath_str.substring(proxy_host_with_schema.length);
-if(relativePath_str.startsWith(proxy_host + "/")) relativePath_str = relativePath_str.substring(proxy_host.length + 1);
-if(relativePath_str.startsWith(proxy_host)) relativePath_str = relativePath_str.substring(proxy_host.length);
-
-// 把relativePath去除掉当前代理的地址 https://proxy.com/ ， relative path成为 被代理的（相对）地址，target_website.com/path
-
-}catch{
-//ignore
-}
-try {
-var absolutePath = new URL(relativePath_str, original_website_url_str).href; //获取绝对路径
-absolutePath = absolutePath.replaceAll(window.location.href, original_website_url_str); //可能是参数里面带了当前的链接，需要还原原来的链接防止403
-absolutePath = absolutePath.replaceAll(encodeURI(window.location.href), encodeURI(original_website_url_str));
-absolutePath = absolutePath.replaceAll(encodeURIComponent(window.location.href), encodeURIComponent(original_website_url_str));
-
-absolutePath = absolutePath.replaceAll(proxy_host, original_website_host);
-absolutePath = absolutePath.replaceAll(encodeURI(proxy_host), encodeURI(original_website_host));
-absolutePath = absolutePath.replaceAll(encodeURIComponent(proxy_host), encodeURIComponent(original_website_host));
-
-absolutePath = proxy_host_with_schema + absolutePath;
-
-
-
-absolutePath = pathAfterAdd + absolutePath;
-
-
-
-
-return absolutePath;
-} catch (e) {
-console.log("Exception occured: " + e.message + original_website_url_str + "   " + relativePath_str);
-return relativePath_str;
-}
-}
-
-
-// change from https://proxy.com/https://target_website.com/a to https://target_website.com/a
-function getOriginalUrl(url){
-if(url == null) return null;
-if(url.startsWith(proxy_host_with_schema)) return url.substring(proxy_host_with_schema.length);
-return url;
-}
-
-
-
-
-//---***========================================***---注入网络---***========================================***---
-function networkInject(){
-  //inject network request
-  var originalOpen = XMLHttpRequest.prototype.open;
-  var originalFetch = window.fetch;
-  XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
-
-    console.log("Original: " + url);
-
-    url = changeURL(url);
-    
-    console.log("R:" + url);
-    return originalOpen.apply(this, arguments);
-  };
-
-  window.fetch = function(input, init) {
-    var url;
-    if (typeof input === 'string') {
-      url = input;
-    } else if (input instanceof Request) {
-      url = input.url;
-    } else {
-      url = input;
-    }
-
-
-
-    url = changeURL(url);
-
-
-
-    console.log("R:" + url);
-    if (typeof input === 'string') {
-      return originalFetch(url, init);
-    } else {
-      const newRequest = new Request(url, input);
-      return originalFetch(newRequest, init);
-    }
-  };
-  
-  console.log("NETWORK REQUEST METHOD INJECTED");
-}
-
-
-//---***========================================***---注入window.open---***========================================***---
-function windowOpenInject(){
-  const originalOpen = window.open;
-
-  // Override window.open function
-  window.open = function (url, name, specs) {
-      let modifiedUrl = changeURL(url);
-      return originalOpen.call(window, modifiedUrl, name, specs);
-  };
-
-  console.log("WINDOW OPEN INJECTED");
-}
-
-
-//---***========================================***---注入append元素---***========================================***---
-function appendChildInject(){
-  const originalAppendChild = Node.prototype.appendChild;
-  Node.prototype.appendChild = function(child) {
-    try{
-      if(child.src){
-        child.src = changeURL(child.src);
-      }
-      if(child.href){
-        child.href = changeURL(child.href);
-      }
-    }catch{
-      //ignore
-    }
-    return originalAppendChild.call(this, child);
+// 丰富的端口用途映射表（远超参考示例）
+const PORT_DESCRIPTIONS = {
+  1: '传输控制协议端口服务多路开关选择器(tcpmux)，用于TCP端口服务复用',
+  2: '管理实用程序(compressnet)，早期压缩网络管理',
+  3: '压缩进程(compressnet)，数据压缩相关进程通信',
+  4: '未分配，预留端口',
+  5: '远程作业登录(rje)，远程作业提交与管理',
+  6: '未分配，预留端口',
+  7: '回显(echo)，测试网络连通性，返回接收到的数据包',
+  8: '未分配，预留端口',
+  9: '丢弃(discard)，接收数据包但不做任何响应，用于测试',
+  10: '未分配，预留端口',
+  11: '在线用户(systat Active Users)，查询系统当前在线用户',
+  12: '未分配，预留端口',
+  13: '时间(daytime)，提供当前日期和时间的ASCII字符串',
+  14: '未分配，预留端口',
+  15: 'netstat，查询网络连接状态',
+  16: '未分配，预留端口',
+  17: '每日名言(qotd)，返回随机的名言警句',
+  18: '消息发送协议(msp)，早期消息传输协议',
+  19: '字符发生器协议(chargen)，生成连续的ASCII字符流，用于测试',
+  20: 'FTP 文件传输协议(默认数据口)，传输FTP数据',
+  21: 'FTP 文件传输协议(控制)，FTP命令交互端口',
+  22: 'SSH 远程登录协议，安全的远程服务器登录，替代Telnet',
+  23: 'telnet(终端仿真协议)，明文远程登录，木马 Tiny Telnet Server 常利用此端口',
+  24: '预留给个人用邮件系统(priv-mail)，私人邮件服务',
+  25: 'SMTP 服务器端口，用于发送邮件，需配合POP3/IMAP接收',
+  26: 'rsftp，增强型FTP服务',
+  27: 'NSW用户系统FE(nsw-fe)，早期网络服务前端',
+  28: '未分配，预留端口',
+  29: 'MSG ICP，消息交换控制协议',
+  30: '未分配，预留端口',
+  31: 'MSG 验证(msg-auth)，木马 Master Paradise、HackersParadise 开放此端口',
+  32: '未分配，预留端口',
+  33: '显示支持协议(dsp)，显示设备通信协议',
+  34: '未分配，预留端口',
+  35: '预留给个人打印机服务(priv-print)，私人打印服务',
+  36: '未分配，预留端口',
+  37: '时间(time)，以32位二进制数返回当前时间',
+  38: '路由访问协议(rap)，路由信息访问',
+  39: '资源定位协议(rlp)，网络资源定位',
+  40: '未分配，预留端口',
+  41: '图形(graphics)，早期图形数据传输',
+  42: '主机名服务(nameserver)，主机名解析',
+  43: 'whois服务，查询域名/IP的注册信息',
+  44: 'MPM(消息处理模块)标志协议(mpm-flags)，消息模块标识',
+  45: '消息处理模块(mpm)，核心消息处理',
+  46: '消息处理模块(默认发送口)(mpm-snd)，消息发送',
+  47: 'NI FTP，网络设备FTP服务',
+  48: '数码音频后台服务(auditd)，音频审计服务',
+  49: 'TACACS 登录主机协议，远程认证服务',
+  50: '远程邮件检查协议(re-mail-ck)，远程邮件校验',
+  51: 'IMP(接口信息处理机)逻辑地址维护(la-maint)，网络设备地址管理',
+  52: '施乐网络服务系统时间协议(xns-time)，Xerox网络时间同步',
+  53: 'DNS域名服务器(domain)，域名解析核心端口，UDP/TCP均使用',
+  54: '施乐网络服务系统票据交换(xns-ch)，Xerox网络票据交换',
+  55: 'ISI图形语言(isi-gl)，ISI标准图形传输',
+  56: '施乐网络服务系统验证(xns-auth)，Xerox网络认证',
+  57: '预留个人用终端访问(priv-term)，私人终端访问',
+  58: '施乐网络服务系统邮件(xns-mail)，Xerox网络邮件',
+  59: '预留个人文件服务(priv-file)，私人文件服务',
+  60: '未定义(Unassigned)',
+  61: 'NI邮件(ni-mail)，网络设备邮件服务',
+  62: '异步通讯适配器服务(acas)，异步通信适配',
+  63: 'whois++，增强型whois服务',
+  64: '通讯接口(covia)，通用通信接口',
+  65: 'TACACS 数据库服务(tacacs-ds)，TACACS认证数据库',
+  66: 'Oracle SQL*NET(sqlnet)，Oracle数据库通信',
+  67: '引导程序协议服务端(bootps)，DHCP服务器端口，分配IP地址',
+  68: '引导程序协议客户端(bootpc)，DHCP客户端端口',
+  69: '小型文件传输协议(tftp)，无认证的简单文件传输',
+  70: '信息检索协议(gopher)，早期互联网信息检索服务',
+  71: '远程作业服务(netrjs-1)，远程作业执行1',
+  72: '远程作业服务(netrjs-2)，远程作业执行2',
+  73: '远程作业服务(netrjs-3)，远程作业执行3',
+  74: '远程作业服务(netrjs-4)，远程作业执行4',
+  75: '预留给个人拨出服务(priv-dial)，私人拨号服务',
+  76: '分布式外部对象存储(deos)，分布式对象存储',
+  77: '预留给个人远程作业输入服务(priv-rje)，私人远程作业提交',
+  78: '修正TCP(vettcp)，TCP协议调试修正',
+  79: '查询远程主机在线用户等信息(finger)，查询主机用户信息',
+  80: 'HTTP，超文本传输协议，Web服务核心端口',
+  81: 'HOST2名称服务(hosts2-ns)，备用域名解析，也常用于内网Web服务',
+  82: '传输实用程序(xfer)，文件传输工具',
+  83: '模块化智能终端ML设备(mit-ml-dev)，MIT智能终端通信',
+  84: '公用追踪设备(ctf)，通用跟踪服务',
+  85: '模块化智能终端ML设备(mit-ml-dev)，备用智能终端通信',
+  86: 'Micro Focus Cobol 编程语言(mfcobol)，COBOL语言开发调试',
+  87: '预留给个人终端连接(priv-term-l)，本地私人终端连接',
+  88: 'Kerberros安全认证系统(kerberos-sec)，企业级身份认证',
+  89: 'SU/MIT telnet(终端仿真网关)(su-mit-tg)，MIT Telnet网关',
+  90: 'DNSIX安全属性标记图，DNS安全扩展',
+  91: 'MIT Dover 假脱机，MIT打印假脱机服务',
+  92: '网络打印协议(npp)，网络打印管理',
+  93: '设备控制协议(dcp)，硬件设备控制',
+  94: 'Tivoli 对象调度(objcall)，Tivoli运维平台调度',
+  95: 'supdup，远程终端服务增强版',
+  96: 'DIXIE 协议规范，目录访问协议',
+  97: '快速远程虚拟文件协议(swift-rvf)，快速虚拟文件传输',
+  98: 'TAC新闻协议(tacnews)、linuxconf，Linux系统配置',
+  99: '后门程序ncx99 开放此端口、metagram，元数据传输',
+  100: 'newacct，新建账户服务',
+  102: '消息传输代理、ISO开发环境(ISODE)网络应用，ISO标准网络应用',
+  109: 'POP2 服务器端口，早期邮件接收协议，已被POP3取代',
+  110: 'POP3 服务器端口，邮件接收核心端口，从服务器下载邮件',
+  111: 'SUN RPC服务(rpcbind)，UNIX/Linux远程过程调用',
+  113: '认证服务(ident)，鉴别TCP连接的用户身份',
+  119: 'NNTP，USENET新闻组传输协议',
+  120: 'cfdptkt，证书分发协议',
+  135: 'RPC(msrpc)，Windows远程过程调用，DCOM服务核心',
+  137: 'NETBIOS-NS，NetBIOS名称解析，Windows共享发现',
+  138: 'NETBIOS-DGM，NetBIOS数据报，Windows共享通信',
+  139: 'NETBIOS-SSN，NetBIOS会话，Windows文件/打印机共享',
+  143: 'IMAP，邮件交互访问协议，比POP3更灵活的邮件接收',
+  161: 'SNMP，简单网络管理协议，监控网络设备(路由器/交换机)',
+  162: 'SNMPTRAP，SNMP陷阱，网络设备异常告警',
+  177: 'XDMCP，X窗口系统远程显示管理',
+  389: 'LDAP，轻型目录访问协议，企业级用户目录管理(如AD)',
+  443: 'HTTPS，安全HTTP，Web服务加密传输，SSL/TLS加持',
+  445: 'SMB/Microsoft-DS，Windows文件共享(替代139)，易被勒索病毒利用',
+  512: 'rexec，UNIX远程执行命令，明文传输风险高',
+  513: 'rlogin，UNIX远程登录，明文传输',
+  514: 'syslog，系统日志，收集设备/服务器日志',
+  548: 'AFP，苹果文件共享协议，MacOS设备共享',
+  636: 'LDAPS，加密LDAP服务，LDAP over SSL',
+  993: 'IMAPS，加密IMAP服务，IMAP over SSL',
+  995: 'POP3S，加密POP3服务，POP3 over SSL',
+  1080: 'SOCKS，代理协议，转发各类网络请求',
+  1433: 'MSSQL，微软SQL Server数据库默认端口',
+  1521: 'Oracle数据库，Oracle默认监听端口',
+  1526: 'Oracle数据库，备用监听端口',
+  2049: 'NFS，UNIX/Linux网络文件系统，跨主机文件共享',
+  2181: 'ZooKeeper，分布式协调服务，大数据组件核心',
+  3306: 'MySQL/MariaDB，关系型数据库核心端口',
+  3389: 'RDP，Windows远程桌面，图形化远程控制',
+  3690: 'SVN，版本控制系统，代码管理',
+  5432: 'PostgreSQL，开源关系型数据库端口',
+  5900: 'VNC，跨平台远程桌面协议',
+  6379: 'Redis，开源内存数据库，缓存服务',
+  6380: 'RedisSSL，加密Redis服务',
+  7001: 'WebLogic，Oracle中间件默认端口',
+  8080: 'HTTP代理/备用Web端口，Tomcat/代理服务器常用',
+  8081: '备用Web端口，多服务部署时常用',
+  8443: 'HTTPS备用端口，Tomcat SSL默认端口',
+  9200: 'Elasticsearch，搜索引擎REST API端口',
+  9300: 'Elasticsearch，集群通信端口',
+  27017: 'MongoDB，非关系型数据库默认端口',
+  27018: 'MongoDB，副本集通信端口',
+  5672: 'RabbitMQ，消息队列默认端口',
+  61616: 'ActiveMQ，消息队列核心端口',
+  8888: 'HTTP代理/开发服务器，Python/Node开发常用',
+  9092: 'Kafka，消息队列Broker端口',
+  11211: 'Memcached，分布式缓存服务端口',
+  // 补充更多恶意端口/特殊用途端口
+  1234: '木马 SubSeven2.0、Ultors Trojan 开放，Hotline通信',
+  1243: '木马 SubSeven1.0/1.9 开放，串口网关',
+  1492: '木马 FTP99CMP 开放，Stone Design软件通信',
+  1600: '木马 Shivka-Burka 开放，ISSD服务',
+  2000: '木马 GirlFriend 1.3 开放，Cisco SCCP协议',
+  2023: '木马 Pass Ripper 开放，Windows扩展服务',
+  3128: 'Squid HTTP代理，企业级代理服务器',
+  3333: '木马 Prosiak 开放，DEC笔记服务',
+  4000: '腾讯QQ客户端，远程管理服务',
+  5000: '木马 blazer5 开放，UPnP服务',
+  7626: '木马冰河开放，SIMCO工业通信',
+  8000: '腾讯QQ服务器，HTTP备用端口',
+  12345: '木马 NetBus1.60 开放，NetBus远控',
+  31337: '木马 BO(Back Orifice)开放，黑客常用远控端口',
+  33899: 'Windows远程桌面备用端口，管理员自定义',
+  65535: '未分配，TCP端口最大值，部分木马利用此端口隐藏'
 };
-console.log("APPEND CHILD INJECTED");
-}
 
-
-
-
-//---***========================================***---注入元素的src和href---***========================================***---
-function elementPropertyInject(){
-  const originalSetAttribute = HTMLElement.prototype.setAttribute;
-  HTMLElement.prototype.setAttribute = function (name, value) {
-      if (name == "src" || name == "href") {
-        value = changeURL(value);
-      }
-      originalSetAttribute.call(this, name, value);
-  };
-
-
-  const originalGetAttribute = HTMLElement.prototype.getAttribute;
-  HTMLElement.prototype.getAttribute = function (name) {
-    const val = originalGetAttribute.call(this, name);
-    if (name == "href" || name == "src") {
-      return getOriginalUrl(val);
-    }
-    return val;
-  };
-
-
-
-  console.log("ELEMENT PROPERTY (get/set attribute) INJECTED");
-
-
-
-  // -------------------------------------
-
-
-  //ChatGPT + personal modify
-  const setList = [
-    [HTMLAnchorElement, "href"],
-    [HTMLScriptElement, "src"],
-    [HTMLImageElement, "src"],
-    // [HTMLImageElement, "srcset"], // 注意 srcset 是特殊格式，可以先只处理 src
-    [HTMLLinkElement, "href"],
-    [HTMLIFrameElement, "src"],
-    [HTMLVideoElement, "src"],
-    [HTMLAudioElement, "src"],
-    [HTMLSourceElement, "src"],
-    // [HTMLSourceElement, "srcset"],
-    [HTMLObjectElement, "data"],
-    [HTMLFormElement, "action"],
-  ];
-  
-  for (const [whichElement, whichProperty] of setList) {
-    if (!whichElement || !whichElement.prototype) continue;
-    const descriptor = Object.getOwnPropertyDescriptor(whichElement.prototype, whichProperty);
-    if (!descriptor) continue;
-  
-    Object.defineProperty(whichElement.prototype, whichProperty, {
-      get: function () {
-        const real = descriptor.get.call(this);
-        return getOriginalUrl(real);
-      },
-      set: function (val) {
-        descriptor.set.call(this, changeURL(val));
-      },
-      configurable: true,
-    });
-  
-    console.log("Hooked " + whichElement.name + " " + whichProperty);
-  }
-
-
-
-  console.log("ELEMENT PROPERTY (src / href) INJECTED");
-}
-
-
-
-
-//---***========================================***---注入location---***========================================***---
-class ProxyLocation {
-  constructor(originalLocation) {
-      this.originalLocation = originalLocation;
-  }
-
-  // 方法：重新加载页面
-  reload(forcedReload) {
-    this.originalLocation.reload(forcedReload);
-  }
-
-  // 方法：替换当前页面
-  replace(url) {
-    this.originalLocation.replace(changeURL(url));
-  }
-
-  // 方法：分配一个新的 URL
-  assign(url) {
-    this.originalLocation.assign(changeURL(url));
-  }
-
-  // 属性：获取和设置 href
-  get href() {
-    return original_website_url_str;
-  }
-
-  set href(url) {
-    this.originalLocation.href = changeURL(url);
-  }
-
-  // 属性：获取和设置 protocol
-  get protocol() {
-    return original_website_url.protocol;
-  }
-
-  set protocol(value) {
-    original_website_url.protocol = value;
-    this.originalLocation.href = proxy_host_with_schema + original_website_url.href;
-  }
-
-  // 属性：获取和设置 host
-  get host() {
-    return original_website_url.host;
-  }
-
-  set host(value) {
-    original_website_url.host = value;
-    this.originalLocation.href = proxy_host_with_schema + original_website_url.href;
-  }
-
-  // 属性：获取和设置 hostname
-  get hostname() {
-    return original_website_url.hostname;
-  }
-
-  set hostname(value) {
-    original_website_url.hostname = value;
-    this.originalLocation.href = proxy_host_with_schema + original_website_url.href;
-  }
-
-  // 属性：获取和设置 port
-  get port() {
-    return original_website_url.port;
-  }
-
-  set port(value) {
-    original_website_url.port = value;
-    this.originalLocation.href = proxy_host_with_schema + original_website_url.href;
-  }
-
-  // 属性：获取和设置 pathname
-  get pathname() {
-    return original_website_url.pathname;
-  }
-
-  set pathname(value) {
-    original_website_url.pathname = value;
-    this.originalLocation.href = proxy_host_with_schema + original_website_url.href;
-  }
-
-  // 属性：获取和设置 search
-  get search() {
-    return original_website_url.search;
-  }
-
-  set search(value) {
-    original_website_url.search = value;
-    this.originalLocation.href = proxy_host_with_schema + original_website_url.href;
-  }
-
-  // 属性：获取和设置 hash
-  get hash() {
-    return original_website_url.hash;
-  }
-
-  set hash(value) {
-    original_website_url.hash = value;
-    this.originalLocation.href = proxy_host_with_schema + original_website_url.href;
-  }
-
-  // 属性：获取 origin
-  get origin() {
-    return original_website_url.origin;
-  }
-
-  toString() {
-    return this.originalLocation.href;
+// 多线程扫描核心函数（利用Cloudflare并发优势）
+async function scanPort(host, port, timeout = 1000) {
+  try {
+    const start = Date.now();
+    // 使用Cloudflare TCP连接检测端口状态
+    const conn = await Deno.connect({ hostname: host, port: port, transport: "tcp" });
+    conn.close();
+    const latency = Date.now() - start;
+    return { port, status: 'open', latency, description: PORT_DESCRIPTIONS[port] || '未标注端口' };
+  } catch (e) {
+    // 区分关闭/过滤状态（Cloudflare网络特性）
+    const status = e.message.includes('connection refused') ? 'close' : 'filtered';
+    return { port, status, latency: timeout, description: PORT_DESCRIPTIONS[port] || '未标注端口' };
   }
 }
 
-
-
-function documentLocationInject(){
-  Object.defineProperty(document, 'URL', {
-    get: function () {
-        return original_website_url_str;
-    },
-    set: function (url) {
-        document.URL = changeURL(url);
-    }
-});
-
-Object.defineProperty(document, '${replaceUrlObj}', {
-      get: function () {
-          return new ProxyLocation(window.location);
-      },  
-      set: function (url) {
-          window.location.href = changeURL(url);
-      }
-});
-console.log("LOCATION INJECTED");
-}
-
-
-
-function windowLocationInject() {
-
-  Object.defineProperty(window, '${replaceUrlObj}', {
-      get: function () {
-          return new ProxyLocation(window.location);
-      },
-      set: function (url) {
-          window.location.href = changeURL(url);
-      }
-  });
-
-  console.log("WINDOW LOCATION INJECTED");
-}
-
-
-
-
-
-
-
-
-
-//---***========================================***---注入历史---***========================================***---
-function historyInject(){
-  const originalPushState = History.prototype.pushState;
-  const originalReplaceState = History.prototype.replaceState;
-
-  History.prototype.pushState = function (state, title, url) {
-    if(!url) return; //x.com 会有一次undefined
-
-
-    if(url.startsWith("/" + original_website_url.href)) url = url.substring(("/" + original_website_url.href).length); // https://example.com/
-    if(url.startsWith("/" + original_website_url.href.substring(0, original_website_url.href.length - 1))) url = url.substring(("/" + original_website_url.href).length - 1); // https://example.com (没有/在最后)
-
-    
-    var u = changeURL(url);
-    return originalPushState.apply(this, [state, title, u]);
-  };
-
-  History.prototype.replaceState = function (state, title, url) {
-    console.log("History url started: " + url);
-    if(!url) return; //x.com 会有一次undefined
-
-    // console.log(Object.prototype.toString.call(url)); // [object URL] or string
-
-
-    let url_str = url.toString(); // 如果是 string，那么不会报错，如果是 [object URL] 会解决报错
-
-
-    //这是给duckduckgo专门的补丁，可能是window.location字样做了加密，导致服务器无法替换。
-    //正常链接它要设置的history是/，改为proxy之后变为/https://duckduckgo.com。
-    //但是这种解决方案并没有从"根源"上解决问题
-
-    if(url_str.startsWith("/" + original_website_url.href)) url_str = url_str.substring(("/" + original_website_url.href).length); // https://example.com/
-    if(url_str.startsWith("/" + original_website_url.href.substring(0, original_website_url.href.length - 1))) url_str = url_str.substring(("/" + original_website_url.href).length - 1); // https://example.com (没有/在最后)
-
-
-    //给ipinfo.io的补丁：历史会设置一个https:/ipinfo.io，可能是他们获取了href，然后想设置根目录
-    // *** 这里不需要 replaceAll，因为只是第一个需要替换 ***
-    if(url_str.startsWith("/" + original_website_url.href.replace("://", ":/"))) url_str = url_str.substring(("/" + original_website_url.href.replace("://", ":/")).length); // https://example.com/
-    if(url_str.startsWith("/" + original_website_url.href.substring(0, original_website_url.href.length - 1).replace("://", ":/"))) url_str = url_str.substring(("/" + original_website_url.href).replace("://", ":/").length - 1); // https://example.com (没有/在最后)
-
-
-
-    var u = changeURL(url_str);
-
-    console.log("History url changed: " + u);
-
-    return originalReplaceState.apply(this, [state, title, u]);
-  };
-
-  History.prototype.back = function () {
-    return originalBack.apply(this);
-  };
-
-  History.prototype.forward = function () {
-    return originalForward.apply(this);
-  };
-
-  History.prototype.go = function (delta) {
-    return originalGo.apply(this, [delta]);
-  };
-
-  console.log("HISTORY INJECTED");
-}
-
-
-
-
-
-
-//---***========================================***---Hook观察界面---***========================================***---
-function obsPage() {
-  var yProxyObserver = new MutationObserver(function(mutations) {
-    mutations.forEach(function(mutation) {
-      traverseAndConvert(mutation);
-    });
-  });
-  var config = { attributes: true, childList: true, subtree: true };
-  yProxyObserver.observe(document.body, config);
-
-  console.log("OBSERVING THE WEBPAGE...");
-}
-
-function traverseAndConvert(node) {
-  if (node instanceof HTMLElement) {
-    removeIntegrityAttributesFromElement(node);
-    covToAbs(node);
-    node.querySelectorAll('*').forEach(function(child) {
-      removeIntegrityAttributesFromElement(child);
-      covToAbs(child);
-    });
+// 分批次扫描（避免Cloudflare限流）
+async function batchScan(host, ports, batchSize = 50, timeout = 1000) {
+  const results = [];
+  // 分批处理端口
+  for (let i = 0; i < ports.length; i += batchSize) {
+    const batch = ports.slice(i, i + batchSize);
+    // 并发扫描当前批次
+    const batchResults = await Promise.all(
+      batch.map(port => scanPort(host, port, timeout))
+    );
+    results.push(...batchResults);
+    // 轻微延迟避免触发防护
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
+  return results;
 }
 
-
-// ************************************************************************
-// ************************************************************************
-// Problem: img can also have srcset
-// https://developer.mozilla.org/en-US/docs/Web/HTML/Guides/Responsive_images
-// and link secret
-// https://developer.mozilla.org/en-US/docs/Web/API/HTMLLinkElement/imageSrcset
-// ************************************************************************
-// ************************************************************************
-
-function covToAbs(element) {
-  if(!(element instanceof HTMLElement)) return;
-  
-
-  if (element.hasAttribute("href")) {
-    relativePath = element.getAttribute("href");
-    try {
-      var absolutePath = changeURL(relativePath);
-      element.setAttribute("href", absolutePath);
-    } catch (e) {
-      console.log("Exception occured: " + e.message + original_website_url_str + "   " + relativePath);
-      console.log(element);
-    }
-  }
-
-
-  if (element.hasAttribute("src")) {
-    relativePath = element.getAttribute("src");
-    try {
-      var absolutePath = changeURL(relativePath);
-      element.setAttribute("src", absolutePath);
-    } catch (e) {
-      console.log("Exception occured: " + e.message + original_website_url_str + "   " + relativePath);
-      console.log(element);
-    }
-  }
-
-
-  if (element.tagName === "FORM" && element.hasAttribute("action")) {
-    relativePath = element.getAttribute("action");
-    try {
-      var absolutePath = changeURL(relativePath);
-      element.setAttribute("action", absolutePath);
-    } catch (e) {
-      console.log("Exception occured: " + e.message + original_website_url_str + "   " + relativePath);
-      console.log(element);
-    }
-  }
-
-
-  if (element.tagName === "SOURCE" && element.hasAttribute("srcset")) {
-    relativePath = element.getAttribute("srcset");
-    try {
-      var absolutePath = changeURL(relativePath);
-      element.setAttribute("srcset", absolutePath);
-    } catch (e) {
-      console.log("Exception occured: " + e.message + original_website_url_str + "   " + relativePath);
-      console.log(element);
-    }
-  }
-
-
-  // 视频的封面图
-  if ((element.tagName === "VIDEO" || element.tagName === "AUDIO") && element.hasAttribute("poster")) {
-    relativePath = element.getAttribute("poster");
-    try {
-      var absolutePath = changeURL(relativePath);
-      element.setAttribute("poster", absolutePath);
-    } catch (e) {
-      console.log("Exception occured: " + e.message);
-    }
-  }
-
-
-
-  if (element.tagName === "OBJECT" && element.hasAttribute("data")) {
-    relativePath = element.getAttribute("data");
-    try {
-      var absolutePath = changeURL(relativePath);
-      element.setAttribute("data", absolutePath);
-    } catch (e) {
-      console.log("Exception occured: " + e.message);
-    }
-  }
-
-
-
-
-
-}
-
-
-function removeIntegrityAttributesFromElement(element){
-  if (element.hasAttribute('integrity')) {
-    element.removeAttribute('integrity');
-  }
-}
-//---***========================================***---Hook观察界面里面要用到的func---***========================================***---
-function loopAndConvertToAbs(){
-  for(var ele of document.querySelectorAll('*')){
-    removeIntegrityAttributesFromElement(ele);
-    covToAbs(ele);
-  }
-  console.log("LOOPED EVERY ELEMENT");
-}
-
-function covScript(){ //由于observer经过测试不会hook添加的script标签，也可能是我测试有问题？
-  var scripts = document.getElementsByTagName('script');
-  for (var i = 0; i < scripts.length; i++) {
-    covToAbs(scripts[i]);
-  }
-    setTimeout(covScript, 3000);
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-//---***========================================***---操作---***========================================***---
-networkInject();
-windowOpenInject();
-elementPropertyInject();
-appendChildInject();
-documentLocationInject();
-windowLocationInject();
-historyInject();
-
-
-
-
-//---***========================================***---在window.load之后的操作---***========================================***---
-window.addEventListener('load', () => {
-  loopAndConvertToAbs();
-  console.log("CONVERTING SCRIPT PATH");
-  obsPage();
-  covScript();
-});
-console.log("WINDOW ONLOAD EVENT ADDED");
-
-
-
-
-
-//---***========================================***---在window.error的时候---***========================================***---
-
-window.addEventListener('error', event => {
-  var element = event.target || event.srcElement;
-  if (element.tagName === 'SCRIPT') {
-    console.log("Found problematic script:", element);
-    if(element.alreadyChanged){
-      console.log("this script has already been injected, ignoring this problematic script...");
-      return;
-    }
-    // 调用 covToAbs 函数
-    removeIntegrityAttributesFromElement(element);
-    covToAbs(element);
-
-    // 创建新的 script 元素
-    var newScript = document.createElement("script");
-    newScript.src = element.src;
-    newScript.async = element.async; // 保留原有的 async 属性
-    newScript.defer = element.defer; // 保留原有的 defer 属性
-    newScript.alreadyChanged = true;
-
-    // 添加新的 script 元素到 document
-    document.head.appendChild(newScript);
-
-    console.log("New script added:", newScript);
-  }
-}, true);
-console.log("WINDOW CORS ERROR EVENT ADDED");
-
-
-
-
-
-`;
-
-
-const htmlCovPathInjectFuncName = "parseAndInsertDoc";
-const htmlCovPathInject = `
-function ${htmlCovPathInjectFuncName}(htmlString) {
-  // First, modify the HTML string to update all URLs and remove integrity
-  const parser = new DOMParser();
-  const tempDoc = parser.parseFromString(htmlString, 'text/html');
-  
-  // Process all elements in the temporary document
-  const allElements = tempDoc.querySelectorAll('*');
-
-  allElements.forEach(element => {
-    covToAbs(element);
-    removeIntegrityAttributesFromElement(element);
-
-
-
-    if (element.tagName === 'SCRIPT') {
-      if (element.textContent && !element.src) {
-          element.textContent = replaceContentPaths(element.textContent);
-      }
-    }
-  
-    if (element.tagName === 'STYLE') {
-      if (element.textContent) {
-          element.textContent = replaceContentPaths(element.textContent);
-      }
-    }
-  });
-
-  
-  // Get the modified HTML string
-  const modifiedHtml = tempDoc.documentElement.outerHTML;
-  
-  // Now use document.open/write/close to replace the entire document
-  // This preserves the natural script execution order
-  document.open();
-  document.write('<!DOCTYPE html>' + modifiedHtml);
-  document.close();
-}
-
-
-
-
-function replaceContentPaths(content){
-  // ChatGPT 替换里面的链接
-  let regex = new RegExp(\`(?<!src="|href=")(https?:\\\\/\\\\/[^\s'"]+)\`, 'g');
-  // 这里写四个 \ 是因为 Server side 的文本也会把它当成转义符
-
-
-  content = content.replaceAll(regex, (match) => {
-    if (match.startsWith("http")) {
-      return proxy_host_with_schema + match;
-    } else {
-      return proxy_host + "/" + match;
-    }
-  });
-
-
-
-  return content;
-
-
-}
-
-`;
-
-// nginx欢迎页面
-const nginxWelcomePage = `<!DOCTYPE html>
-<html>
-<head>
-<title>Welcome to nginx!</title>
-<style>
-body {
-width: 35em;
-margin: 0 auto;
-font-family: Tahoma, Verdana, Arial, sans-serif;
-}
-</style>
-</head>
-<body>
-<h1>Welcome to nginx!</h1>
-<p>If you see this page, the nginx web server is successfully installed and working. Further configuration is required.</p>
-<p>For online documentation and support please refer to <a href="http://nginx.org/">nginx.org</a>.<br/>
-Commercial support is available at <a href="http://nginx.com/">nginx.com</a>.</p>
-<p><em>Thank you for using nginx.</em></p>
-<script defer src="https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015" integrity="sha512-ZpsOmlRQV6y907TI0dKBHq9Md29nnaEIPlkf84rnaERnq6zvWvPUqr2ft8M1aS28oN72PdrCzSjY4U6VaAw1EQ==" data-cf-beacon='{"version":"2024.11.0","token":"23706d89f379497d9a10994cbea3fda0","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
-</body>
-</html>`;
-
-const redirectError = `
-<html><head></head><body><h2>Error while redirecting: the website you want to access to may contain wrong redirect information, and we can not parse the info</h2></body></html>
-`;
-
-//new URL(请求路径, base路径).href;
-
+// 请求处理主函数
 async function handleRequest(request) {
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 前置条件 *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-
-
-  const userAgent = request.headers.get('User-Agent');
-  if (userAgent && userAgent.includes("Bytespider")) {
-    return getHTMLResponse("好不要脸，爬Wikipedia还要用我代理爬，说的就是你们Bytespider。");
-  }
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 判断密码 *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-
-  //获取所有cookie
-  var siteCookie = request.headers.get('Cookie');
-
-
-  if (password != "") {
-    if (siteCookie != null && siteCookie != "") {
-      var pwd = getCook(passwordCookieName, siteCookie);
-      console.log(pwd);
-      if (pwd != null && pwd != "") {
-        if (pwd != password) {
-          return handleWrongPwd();
-        }
-      } else {
-        return handleWrongPwd();
-      }
-    } else {
-      return handleWrongPwd();
-    }
-
-  }
-
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 处理前置情况 *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-
   const url = new URL(request.url);
   
-  // 处理根路径 - 返回nginx欢迎页面
-  if (url.pathname === "/" || url.pathname === "") {
-    return getHTMLResponse(nginxWelcomePage);
-  }
-  
-  if (request.url.endsWith("favicon.ico")) {
-    return getRedirect("https://ti.qq.com/favicon.ico");
-  }
-  
-  if (request.url.endsWith("robots.txt")) {
-    return new Response(`User-Agent: *
-  Disallow: /`, {
-      headers: { "Content-Type": "text/plain" },
-    });
+  // 跨域处理
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json'
+  };
+
+  // 处理OPTIONS预检请求
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { headers });
   }
 
-  // 特殊处理：只代理/qq路径
-  if (!url.pathname.startsWith("/qq")) {
-    return new Response("Not Found", { status: 404 });
-  }
-
-  var actualUrlStr = url.pathname.substring(url.pathname.indexOf(str) + str.length) + url.search + url.hash;
-  
-  // 特殊处理：代理到ti.qq.com
-  if (url.pathname.startsWith("/qq")) {
-    actualUrlStr = "https://ti.qq.com/qqlevel/index" + url.pathname.substring(3) + url.search + url.hash;
-  }
-
-  // 特殊处理：找回密码和新用户注册链接直接跳转
-  if (actualUrlStr.includes("accounts.qq.com/psw/find") || 
-      actualUrlStr.includes("ssl.zc.qq.com/phone/index.html")) {
-    return getRedirect(actualUrlStr);
-  }
-  
-  // 特殊处理：跳过https://ui.ptlogin2.qq.com/cgi-bin/ssl/check
-  if (actualUrlStr.includes("ui.ptlogin2.qq.com/cgi-bin/ssl/check")) {
-    // 这里应该直接访问原链接，但需要处理响应
-    try {
-      const actualUrl = new URL(actualUrlStr);
-      const response = await fetch(actualUrl);
-      return response;
-    } catch {
-      return new Response("Error accessing the resource", { status: 500 });
-    }
-  }
-
-
-  try {
-    var test = actualUrlStr;
-    if (!test.startsWith("http")) {
-      test = "https://" + test;
-    }
-    var u = new URL(test);
-    if (!u.host.includes(".")) {
-      throw new Error();
-    }
-  }
-  catch { //可能是搜素引擎，比如proxy.com/https://www.duckduckgo.com/ 转到 proxy.com/?q=key
-    var lastVisit;
-    if (siteCookie != null && siteCookie != "") {
-      lastVisit = getCook(lastVisitProxyCookie, siteCookie);
-      console.log(lastVisit);
-      if (lastVisit != null && lastVisit != "") {
-        //(!lastVisit.startsWith("http"))?"https://":"" + 
-        //现在的actualUrlStr如果本来不带https:// 的话那么现在也不带，因为判断是否带protocol在后面
-        return getRedirect(thisProxyServerUrlHttps + lastVisit + "/" + actualUrlStr);
-      }
-    }
-    return getHTMLResponse("Something is wrong while trying to get your cookie: <br> siteCookie: " + siteCookie + "<br>" + "lastSite: " + lastVisit);
-  }
-
-
-  if (!actualUrlStr.startsWith("http") && !actualUrlStr.includes("://")) { //从www.xxx.com转到https://www.xxx.com
-    //actualUrlStr = "https://" + actualUrlStr;
-    return getRedirect(thisProxyServerUrlHttps + "https://" + actualUrlStr);
-  }
-
-  //if(!actualUrlStr.endsWith("/")) actualUrlStr += "/";
-  const actualUrl = new URL(actualUrlStr);
-
-  //check for upper case: proxy.com/https://ABCabc.dev
-  if (actualUrlStr != actualUrl.href) return getRedirect(thisProxyServerUrlHttps + actualUrl.href);
-
-
-
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 处理客户端发来的 Header *-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-
-  let clientHeaderWithChange = new Headers();
-  //***代理发送数据的Header：修改部分header防止403 forbidden，要先修改，   因为添加Request之后header是只读的（***ChatGPT，未测试）
-  request.headers.forEach((value, key) => {
-    var newValue = value.replaceAll(thisProxyServerUrlHttps + "http", "http");
-    //无论如何，https://proxy.com/ 都不应该作为https://proxy.com/https://original出现在header中，即使是在paramter里面，改为http也只会变为原先的URL
-    var newValue = newValue.replaceAll(thisProxyServerUrlHttps, `${actualUrl.protocol}//${actualUrl.hostname}/`); // 这是最后带 / 的
-    var newValue = newValue.replaceAll(thisProxyServerUrlHttps.substring(0, thisProxyServerUrlHttps.length - 1), `${actualUrl.protocol}//${actualUrl.hostname}`); // 这是最后不带 / 的
-    var newValue = newValue.replaceAll(thisProxyServerUrl_hostOnly, actualUrl.host); // 仅替换 host
-    clientHeaderWithChange.set(key, newValue);
-  });
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 处理客户端发来的 Body *-*-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-
-
-  let clientRequestBodyWithChange
-  if (request.body) {
-    // 先判断它是否是文本类型的 body，如果是文本的 body 再 text，否则（Binary）就不处理
-
-    // 克隆请求，因为 body 只能读取一次
-    const [body1, body2] = request.body.tee();
-    try {
-      // 尝试作为文本读取
-      const bodyText = await new Response(body1).text();
-
-      // 检查是否包含需要替换的内容
-      if (bodyText.includes(thisProxyServerUrlHttps) ||
-        bodyText.includes(thisProxyServerUrl_hostOnly)) {
-        // 包含需要替换的内容，进行替换
-        clientRequestBodyWithChange = bodyText
-          .replaceAll(thisProxyServerUrlHttps, actualUrlStr)
-          .replaceAll(thisProxyServerUrl_hostOnly, actualUrl.host);
-      } else {
-        // 不包含需要替换的内容，使用原始 body
-        clientRequestBodyWithChange = body2;
-      }
-    } catch (e) {
-      // 读取失败，可能是二进制数据
-      clientRequestBodyWithChange = body2;
-    }
-
-  }
-
-
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 构造代理请求 *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-
-
-
-  const modifiedRequest = new Request(actualUrl, {
-    headers: clientHeaderWithChange,
-    method: request.method,
-    body: (request.body) ? clientRequestBodyWithChange : request.body,
-    //redirect: 'follow'
-    redirect: "manual"
-    //因为有时候会
-    //https://www.jyshare.com/front-end/61   重定向到
-    //https://www.jyshare.com/front-end/61/
-    //但是相对目录就变了
-  });
-
-  //console.log(actualUrl);
-
-
-
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* Fetch结果 *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-
-
-  const response = await fetch(modifiedRequest);
-  if (response.status.toString().startsWith("3") && response.headers.get("Location") != null) {
-    //console.log(base_url + response.headers.get("Location"))
-    try {
-      return getRedirect(thisProxyServerUrlHttps + new URL(response.headers.get("Location"), actualUrlStr).href);
-    } catch {
-      getHTMLResponse(redirectError + "<br>the redirect url:" + response.headers.get("Location") + ";the url you are now at:" + actualUrlStr);
-    }
-  }
-
-
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 处理获取的结果 *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-
-
-  var modifiedResponse;
-  var bd;
-  var hasProxyHintCook = (getCook(proxyHintCookieName, siteCookie) != "");
-  const contentType = response.headers.get("Content-Type");
-
-
-  var isHTML = false;
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 如果有 Body 就处理 *-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-  if (response.body) {
-
-    // =======================================================================================
-    // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 如果 Body 是 Text *-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-    // =======================================================================================
-    if (contentType && contentType.startsWith("text/")) {
-      bd = await response.text();
-
-
-      isHTML = (contentType && contentType.includes("text/html") && bd.includes("<html"));
-
-
-
-      // =======================================================================================
-      // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 如果是 HTML 或者 JS ，替换掉转跳的 Class *-*-*-*-*
-      // =======================================================================================
-      if (contentType && (contentType.includes("html") || contentType.includes("javascript"))) {
-        bd = bd.replaceAll("window.location", "window." + replaceUrlObj);
-        bd = bd.replaceAll("document.location", "document." + replaceUrlObj);
-      }
-
-
-
-
-
-
-
-
-      // =======================================================================================
-      // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 如果是 HTML *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-      // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 一定放在最后，要注入模板，注入的模板不能被替换关键词
-      // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 注入模板，在客户端进行操作（防止资源超载） *-*-*-*
-      // =======================================================================================
-      //bd.includes("<html")  //不加>因为html标签上可能加属性         这个方法不好用因为一些JS中竟然也会出现这个字符串
-      //也需要加上这个方法因为有时候server返回json也是html
-      if (isHTML) {
-        //console.log("STR" + actualUrlStr)
-
-        // 这里就可以删除了，全部在客户端进行替换（以后）
-        // bd = covToAbs_ServerSide(bd, actualUrlStr);
-        // bd = removeIntegrityAttributes(bd);
-
-
-        //https://en.wikipedia.org/wiki/Byte_order_mark
-        var hasBom = false;
-        if (bd.charCodeAt(0) === 0xFEFF) {
-          bd = bd.substring(1); // 移除 BOM
-          hasBom = true;
+  // 扫描请求处理
+  if (url.pathname === '/scan') {
+    const { host, scanType, portRange, timeout } = await request.json();
+    
+    // 验证参数
+    if (!host) return new Response(JSON.stringify({ error: '请输入目标IP/域名' }), { headers });
+    
+    let ports = [];
+    // 常规端口（常用1-65535中高频端口）
+    const commonPorts = [1,2,3,5,7,9,11,13,17,19,20,21,22,23,25,37,43,53,67,68,69,70,79,80,88,110,111,113,119,135,137,138,139,143,161,162,389,443,445,512,513,514,636,993,995,1080,1433,1521,2049,3306,3389,5432,5900,6379,8080,8443,9200,27017];
+    
+    // 按扫描类型生成端口列表
+    switch (scanType) {
+      case 'common':
+        ports = commonPorts;
+        break;
+      case 'range':
+        if (!portRange || !portRange.includes('-')) {
+          return new Response(JSON.stringify({ error: '端口范围格式错误（例：1-100）' }), { headers });
         }
+        const [start, end] = portRange.split('-').map(Number);
+        if (start < 1 || end > 65535 || start > end) {
+          return new Response(JSON.stringify({ error: '端口范围无效（1-65535）' }), { headers });
+        }
+        ports = Array.from({ length: end - start + 1 }, (_, i) => start + i);
+        break;
+      case 'all':
+        ports = Array.from({ length: 65535 }, (_, i) => i + 1);
+        break;
+      default:
+        ports = commonPorts;
+    }
 
-        var inject =
-          `
-        <!DOCTYPE html>
-        <script>
-        
+    // 执行扫描并返回结果
+    const results = await batchScan(host, ports, 50, Number(timeout) || 1000);
+    return new Response(JSON.stringify({ 
+      ip: host,
+      scanTime: new Date().toLocaleString(),
+      results 
+    }), { headers });
+  }
 
+  // 提供前端页面
+  if (url.pathname === '/') {
+    const html = `
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>在线端口扫描工具 - 基于Cloudflare Worker</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: "Microsoft Yahei", Arial, sans-serif;
+    }
+    body {
+      background: #f5f7fa;
+      color: #333;
+      line-height: 1.6;
+      padding: 20px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+      padding: 30px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 30px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #eee;
+    }
+    header h1 {
+      color: #2c3e50;
+      font-size: 28px;
+      margin-bottom: 10px;
+    }
+    header p {
+      color: #7f8c8d;
+      font-size: 14px;
+    }
+    .scan-options {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+    }
+    .form-group {
+      margin-bottom: 15px;
+      display: flex;
+      align-items: center;
+    }
+    .form-group label {
+      width: 120px;
+      font-weight: 600;
+      color: #34495e;
+    }
+    .form-group input, .form-group select, .form-group button {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    .form-group button {
+      background: #3498db;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      transition: background 0.3s;
+      width: 100px;
+      margin-left: 10px;
+    }
+    .form-group button:hover {
+      background: #2980b9;
+    }
+    .form-group button:disabled {
+      background: #bdc3c7;
+      cursor: not-allowed;
+    }
+    .scan-type {
+      display: flex;
+      gap: 15px;
+      margin-bottom: 15px;
+    }
+    .scan-type label {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+    }
+    .scan-type input {
+      margin-right: 5px;
+    }
+    .results {
+      margin-top: 20px;
+    }
+    .results-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      padding: 10px;
+      background: #e9f5ff;
+      border-radius: 4px;
+    }
+    .results-header .info {
+      color: #2980b9;
+      font-weight: 600;
+    }
+    .results-header .status {
+      color: #e74c3c;
+      font-size: 14px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    table th, table td {
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid #eee;
+    }
+    table th {
+      background: #f8f9fa;
+      color: #2c3e50;
+      font-weight: 600;
+    }
+    table tr:hover {
+      background: #f8f9fa;
+    }
+    .status-open {
+      color: #27ae60;
+      font-weight: 600;
+    }
+    .status-close {
+      color: #e74c3c;
+    }
+    .status-filtered {
+      color: #f39c12;
+    }
+    .loading {
+      text-align: center;
+      padding: 50px;
+      color: #7f8c8d;
+    }
+    .loading-spinner {
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #3498db;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .port-desc {
+      font-size: 13px;
+      color: #7f8c8d;
+    }
+    .disclaimer {
+      margin-top: 30px;
+      padding: 15px;
+      background: #fff3cd;
+      border-radius: 4px;
+      font-size: 13px;
+      color: #856404;
+    }
+    .latency {
+      font-family: monospace;
+      color: #3498db;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>在线端口扫描工具</h1>
+      <p>基于Cloudflare Worker构建 | 多线程快速扫描 | 结果实时展示</p>
+    </header>
 
+    <div class="scan-options">
+      <div class="form-group">
+        <label>目标IP/域名：</label>
+        <input type="text" id="targetHost" placeholder="例：1.1.1.1 或 example.com" required>
+        <label style="width: 80px;">超时时间：</label>
+        <input type="number" id="timeout" value="1000" min="100" max="5000" style="width: 100px;">
+        <span style="margin: 0 10px;">ms</span>
+      </div>
 
-        // the proxy hint must be written as a single IIFE, or it will show error in example.com   idk what's wrong
-        (function () {
-          // proxy hint
-          ${((!hasProxyHintCook) ? proxyHintInjection : "")}
-        })();
+      <div class="scan-type">
+        <label><input type="radio" name="scanType" value="common" checked> 常规端口（高频1-65535）</label>
+        <label><input type="radio" name="scanType" value="range"> 指定范围</label>
+        <label><input type="radio" name="scanType" value="all"> 全部端口（1-65535）</label>
+      </div>
 
+      <div class="form-group" id="rangeGroup" style="display: none;">
+        <label>端口范围：</label>
+        <input type="text" id="portRange" placeholder="例：1-1000 或 80,443,3389">
+      </div>
 
+      <div class="form-group">
+        <label></label>
+        <button id="startScan">开始扫描</button>
+        <button id="stopScan" disabled>停止扫描</button>
+      </div>
+    </div>
 
+    <div class="results">
+      <div class="results-header">
+        <div class="info">扫描结果：未开始</div>
+        <div class="status" id="scanStatus"></div>
+      </div>
+      
+      <div id="resultsContainer" style="display: none;">
+        <table>
+          <thead>
+            <tr>
+              <th>端口号</th>
+              <th>状态</th>
+              <th>响应延迟</th>
+              <th>端口用途说明</th>
+            </tr>
+          </thead>
+          <tbody id="resultsTable">
+            <!-- 扫描结果会动态插入这里 -->
+          </tbody>
+        </table>
+      </div>
 
-        (function () {
-          // hooks stuff - Must before convert path functions
-          // it defines all necessary variables
-          ${httpRequestInjection}
+      <div id="loading" class="loading" style="display: none;">
+        <div class="loading-spinner"></div>
+        <p>正在扫描中，请稍候...</p>
+        <p>已扫描 <span id="scannedCount">0</span> / <span id="totalCount">0</span> 个端口</p>
+      </div>
+    </div>
 
+    <div class="disclaimer">
+      <strong>免责声明：</strong>
+      1. 本工具仅用于合法的网络空间测绘和安全测试，禁止用于未授权的扫描行为；
+      2. 扫描结果基于Cloudflare网络环境检测，仅供参考，不保证100%准确；
+      3. 使用本工具即表示您同意遵守相关法律法规，一切责任由使用者自行承担。
+    </div>
+  </div>
 
-          // Convert path functions
-          ${htmlCovPathInject}
+  <script>
+    // 显示/隐藏端口范围输入框
+    const scanTypeRadios = document.querySelectorAll('input[name="scanType"]');
+    const rangeGroup = document.getElementById('rangeGroup');
+    scanTypeRadios.forEach(radio => {
+      radio.addEventListener('change', () => {
+        rangeGroup.style.display = radio.value === 'range' ? 'flex' : 'none';
+      });
+    });
 
-          // Invoke the functioon
+    // 扫描状态管理
+    let isScanning = false;
+    let scanAbortController = null;
+    const startBtn = document.getElementById('startScan');
+    const stopBtn = document.getElementById('stopScan');
+    const resultsContainer = document.getElementById('resultsContainer');
+    const loading = document.getElementById('loading');
+    const resultsTable = document.getElementById('resultsTable');
+    const scanStatus = document.getElementById('scanStatus');
+    const scannedCount = document.getElementById('scannedCount');
+    const totalCount = document.getElementById('totalCount');
 
+    // 开始扫描
+    startBtn.addEventListener('click', async () => {
+      const host = document.getElementById('targetHost').value.trim();
+      const timeout = parseInt(document.getElementById('timeout').value);
+      const scanType = document.querySelector('input[name="scanType"]:checked').value;
+      let portRange = '';
 
-          // ****************************************************************************
-          // it HAVE to be encoded because html will parse the </scri... tag inside script
-          
-          
-          const originalBodyBase64Encoded = "${new TextEncoder().encode(bd)}";
-
-
-          const bytes = new Uint8Array(originalBodyBase64Encoded.split(',').map(Number));
-
-
-
-          // help me debug
-          console.log(
-            '%c' + 'Debug code start',
-            'color: blue; font-size: 15px;'
-          );
-          console.log(
-            '%c' + new TextDecoder().decode(bytes),
-            'color: green; font-size: 10px; padding:5px;'
-          );
-          console.log(
-            '%c' + 'Debug code end',
-            'color: blue; font-size: 15px;'
-          );
-
-
-          ${htmlCovPathInjectFuncName}(new TextDecoder().decode(bytes));
-        
-        
-
-
-        })();
-          </script>
-        `;
-
-        // <script id="inj">document.getElementById("inj").remove();</script>
-
-
-
-
-        bd = (hasBom ? "\uFEFF" : "") + //第一个是零宽度不间断空格，第二个是空
-          inject
-          // + bd
-          ;
+      // 验证参数
+      if (!host) {
+        alert('请输入目标IP/域名！');
+        return;
       }
-      // =======================================================================================
-      // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 如果不是 HTML，就 Regex 替换掉链接 *-*
-      // =======================================================================================
-      else {
-        //ChatGPT 替换里面的链接
-        let regex = new RegExp(`(?<!src="|href=")(https?:\\/\\/[^\s'"]+)`, 'g');
-        bd = bd.replaceAll(regex, (match) => {
-          if (match.startsWith("http")) {
-            return thisProxyServerUrlHttps + match;
-          } else {
-            return thisProxyServerUrl_hostOnly + "/" + match;
-          }
+      if (scanType === 'range') {
+        portRange = document.getElementById('portRange').value.trim();
+        if (!portRange) {
+          alert('请输入端口范围！');
+          return;
+        }
+      }
+
+      // 初始化扫描状态
+      isScanning = true;
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      resultsContainer.style.display = 'none';
+      loading.style.display = 'block';
+      resultsTable.innerHTML = '';
+      scanStatus.textContent = '扫描中...';
+      scannedCount.textContent = '0';
+
+      // 创建中止控制器
+      scanAbortController = new AbortController();
+      const signal = scanAbortController.signal;
+
+      try {
+        // 发送扫描请求
+        const response = await fetch('/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            host,
+            scanType,
+            portRange,
+            timeout
+          }),
+          signal
         });
-      }
 
-      // ***************************************************
-      // ***************************************************
-      // ***************************************************
-      // 问题:在设置css background image 的时候可以使用相对目录 
-      // ***************************************************
-
-
-      modifiedResponse = new Response(bd, response);
-    }
-
-    // =======================================================================================
-    // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 如果 Body 不是 Text （i.g. Binary） *-*-*-*-*-*-*
-    // =======================================================================================
-    else {
-      modifiedResponse = new Response(response.body, response);
-    }
-  }
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 如果没有 Body *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-  else {
-    modifiedResponse = new Response(response.body, response);
-  }
-
-
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 处理要返回的 Cookie Header *-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-  let headers = modifiedResponse.headers;
-  let cookieHeaders = [];
-
-  // Collect all 'Set-Cookie' headers regardless of case
-  for (let [key, value] of headers.entries()) {
-    if (key.toLowerCase() == 'set-cookie') {
-      cookieHeaders.push({ headerName: key, headerValue: value });
-    }
-  }
-
-
-  if (cookieHeaders.length > 0) {
-    cookieHeaders.forEach(cookieHeader => {
-      let cookies = cookieHeader.headerValue.split(',').map(cookie => cookie.trim());
-
-      for (let i = 0; i < cookies.length; i++) {
-        let parts = cookies[i].split(';').map(part => part.trim());
-        //console.log(parts);
-
-        // Modify Path
-        let pathIndex = parts.findIndex(part => part.toLowerCase().startsWith('path='));
-        let originalPath;
-        if (pathIndex !== -1) {
-          originalPath = parts[pathIndex].substring("path=".length);
+        if (!response.ok) throw new Error('扫描请求失败');
+        
+        const result = await response.json();
+        if (result.error) {
+          alert(result.error);
+          return;
         }
-        let absolutePath = "/" + new URL(originalPath, actualUrlStr).href;;
 
-        if (pathIndex !== -1) {
-          parts[pathIndex] = `Path=${absolutePath}`;
+        // 更新扫描信息
+        document.querySelector('.results-header .info').textContent = `扫描结果：${result.ip} | 扫描时间：${result.scanTime}`;
+        totalCount.textContent = result.results.length;
+        
+        // 实时渲染结果（模拟分批展示）
+        let count = 0;
+        result.results.forEach((item, index) => {
+          setTimeout(() => {
+            if (!isScanning) return;
+            count++;
+            scannedCount.textContent = count;
+            
+            // 创建行
+            const tr = document.createElement('tr');
+            
+            // 端口号
+            const portTd = document.createElement('td');
+            portTd.textContent = item.port;
+            portTd.style.fontWeight = '600';
+            
+            // 状态
+            const statusTd = document.createElement('td');
+            const statusSpan = document.createElement('span');
+            statusSpan.textContent = item.status.toUpperCase();
+            statusSpan.className = `status-${item.status}`;
+            statusTd.appendChild(statusSpan);
+            
+            // 延迟
+            const latencyTd = document.createElement('td');
+            latencyTd.className = 'latency';
+            latencyTd.textContent = `${item.latency} ms`;
+            
+            // 描述
+            const descTd = document.createElement('td');
+            descTd.className = 'port-desc';
+            descTd.textContent = item.description;
+            
+            // 组装行
+            tr.appendChild(portTd);
+            tr.appendChild(statusTd);
+            tr.appendChild(latencyTd);
+            tr.appendChild(descTd);
+            resultsTable.appendChild(tr);
+            
+            // 全部渲染完成
+            if (index === result.results.length - 1) {
+              isScanning = false;
+              startBtn.disabled = false;
+              stopBtn.disabled = true;
+              loading.style.display = 'none';
+              resultsContainer.style.display = 'block';
+              scanStatus.textContent = `扫描完成 | 开放端口：${result.results.filter(r => r.status === 'open').length} 个`;
+            }
+          }, index * 10); // 每10ms渲染一行，模拟实时扫描
+        });
+
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          alert('扫描出错：' + e.message);
+          scanStatus.textContent = '扫描失败';
         } else {
-          parts.push(`Path=${absolutePath}`);
+          scanStatus.textContent = '扫描已中止';
         }
-
-        // Modify Domain
-        let domainIndex = parts.findIndex(part => part.toLowerCase().startsWith('domain='));
-
-        if (domainIndex !== -1) {
-          parts[domainIndex] = `domain=${thisProxyServerUrl_hostOnly}`;
-        } else {
-          parts.push(`domain=${thisProxyServerUrl_hostOnly}`);
-        }
-
-        cookies[i] = parts.join('; ');
+        isScanning = false;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        loading.style.display = 'none';
       }
+    });
 
-      // Re-join cookies and set the header
-      headers.set(cookieHeader.headerName, cookies.join(', '));
+    // 停止扫描
+    stopBtn.addEventListener('click', () => {
+      if (scanAbortController) {
+        scanAbortController.abort();
+        isScanning = false;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        loading.style.display = 'none';
+        scanStatus.textContent = '扫描已中止';
+      }
+    });
+  </script>
+</body>
+</html>
+    `;
+    return new Response(html, {
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        ...headers
+      }
     });
   }
-  //bd != null && bd.includes("<html")
-  if (isHTML && response.status == 200) { //如果是HTML再加cookie，因为有些网址会通过不同的链接添加CSS等文件
-    let cookieValue = lastVisitProxyCookie + "=" + actualUrl.origin + "; Path=/; Domain=" + thisProxyServerUrl_hostOnly;
-    //origin末尾不带/
-    //例如：console.log(new URL("https://www.baidu.com/w/s?q=2#e"));
-    //origin: "https://www.baidu.com"
-    headers.append("Set-Cookie", cookieValue);
 
-    if (response.body && !hasProxyHintCook) { //response.body 确保是正常网页再设置cookie
-      //添加代理提示
-      const expiryDate = new Date();
-      expiryDate.setTime(expiryDate.getTime() + 24 * 60 * 60 * 1000); // 24小时
-      var hintCookie = `${proxyHintCookieName}=1; expires=${expiryDate.toUTCString()}; path=/`;
-      headers.append("Set-Cookie", hintCookie);
-    }
-
-  }
-
-
-
-
-
-
-
-
-  // =======================================================================================
-  // *-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-* 删除部分限制性的 Header *-*-*-*-*-*-*-*-*-*-*-*-*
-  // =======================================================================================
-
-  // 添加允许跨域访问的响应头
-  //modifiedResponse.headers.set("Content-Security-Policy", "default-src *; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline'; img-src * data:; media-src *; frame-src *; font-src *; connect-src *; base-uri *; form-action *;");
-
-  modifiedResponse.headers.set('Access-Control-Allow-Origin', '*');
-  modifiedResponse.headers.set("X-Frame-Options", "ALLOWALL");
-
-
-  /* 
-  Cross-Origin-Opener-Policy感觉不需要
-  
-  Claude: 如果设置了 COOP: same-origin
-  const popup = window.open('https://different-origin.com'); 
-  popup 将会是 null
-  同时之前打开的窗口也无法通过 window.opener 访问当前窗口 */
-
-
-  /*Claude:
-  
-  如果设置了 Cross-Origin-Embedder-Policy: require-corp
-  <img src="https://other-domain.com/image.jpg"> 
-  这个图片默认将无法加载，除非服务器响应带有适当的 CORS 头部
-
-  Cross-Origin-Resource-Policy
-  允许服务器声明谁可以加载此资源
-  比 CORS 更严格，因为它甚至可以限制【无需凭证的】请求
-  可以防止资源被跨源加载，即使是简单的 GET 请求
-  */
-  var listHeaderDel = ["Content-Security-Policy", "Permissions-Policy", "Cross-Origin-Embedder-Policy", "Cross-Origin-Resource-Policy"];
-  listHeaderDel.forEach(element => {
-    modifiedResponse.headers.delete(element);
-    modifiedResponse.headers.delete(element + "-Report-Only");
-  });
-
-
-  //************************************************************************************************
-  // ******************************************This need to be thouoght more carefully**************
-  //************************************ Now it will make google map not work if it's activated ****
-  //************************************************************************************************
-  // modifiedResponse.headers.forEach((value, key) => {
-  //   var newValue = value.replaceAll(`${actualUrl.protocol}//${actualUrl.hostname}/`, thisProxyServerUrlHttps); // 这是最后带 / 的
-  //   var newValue = newValue.replaceAll(`${actualUrl.protocol}//${actualUrl.hostname}`, thisProxyServerUrlHttps.substring(0, thisProxyServerUrlHttps.length - 1)); // 这是最后不带 / 的
-  //   modifiedResponse.headers.set(key, newValue); //.replaceAll(thisProxyServerUrl_hostOnly, actualUrl.host)
-  // });
-
-
-
-
-
-  if (!hasProxyHintCook) {
-    //设置content立刻过期，防止多次弹代理警告（但是如果是Content-no-change还是会弹出）
-    modifiedResponse.headers.set("Cache-Control", "max-age=0");
-  }
-
-
-
-
-
-
-  return modifiedResponse;
-}
-
-//https://stackoverflow.com/questions/5142337/read-a-javascript-cookie-by-name
-function getCook(cookiename, cookies) {
-  // Get name followed by anything except a semicolon
-  var cookiestring = RegExp(cookiename + "=[^;]+").exec(cookies);
-  // Return everything after the equal sign, or an empty string if the cookie name not found
-
-  // 这个正则表达式中的 ^ 表示字符串开头，一个字符串只有一个开头，所以这个正则最多只能匹配一次。因此 replace() 和 replaceAll() 的效果完全相同。
-  return decodeURIComponent(!!cookiestring ? cookiestring.toString().replace(/^[^=]+./, "") : "");
-}
-
-const matchList = [[/href=("|')([^"']*)("|')/g, `href="`], [/src=("|')([^"']*)("|')/g, `src="`]];
-function covToAbs_ServerSide(body, requestPathNow) {
-  var original = [];
-  var target = [];
-
-  for (var match of matchList) {
-    var setAttr = body.matchAll(match[0]);
-    if (setAttr != null) {
-      for (var replace of setAttr) {
-        if (replace.length == 0) continue;
-        var strReplace = replace[0];
-        if (!strReplace.includes(thisProxyServerUrl_hostOnly)) {
-          if (!isPosEmbed(body, replace.index)) {
-            var relativePath = strReplace.substring(match[1].toString().length, strReplace.length - 1);
-            if (!relativePath.startsWith("data:") && !relativePath.startsWith("mailto:") && !relativePath.startsWith("javascript:") && !relativePath.startsWith("chrome") && !relativePath.startsWith("edge")) {
-              try {
-                var absolutePath = thisProxyServerUrlHttps + new URL(relativePath, requestPathNow).href;
-                //body = body.replace(strReplace, match[1].toString() + absolutePath + `"`);
-                original.push(strReplace);
-                target.push(match[1].toString() + absolutePath + `"`);
-              } catch {
-                // 无视
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  for (var i = 0; i < original.length; i++) {
-    body = body.replaceAll(original[i], target[i]);
-  }
-  return body;
-}
-
-// console.log(isPosEmbed("<script src='https://www.google.com/'>uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu</script>",2));
-// VM195:1 false
-// console.log(isPosEmbed("<script src='https://www.google.com/'>uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu</script>",10));
-// VM207:1 false
-// console.log(isPosEmbed("<script src='https://www.google.com/'>uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu</script>",50));
-// VM222:1 true
-function isPosEmbed(html, pos) {
-  if (pos > html.length || pos < 0) return false;
-  //取从前面`<`开始后面`>`结束，如果中间有任何`<`或者`>`的话，就是content
-  //<xx></xx><script>XXXXX[T]XXXXXXX</script><tt>XXXXX</tt>
-  //         |-------------X--------------|
-  //                !               !
-  //         conclusion: in content
-
-  // Find the position of the previous '<'
-  let start = html.lastIndexOf('<', pos);
-  if (start === -1) start = 0;
-
-  // Find the position of the next '>'
-  let end = html.indexOf('>', pos);
-  if (end === -1) end = html.length;
-
-  // Extract the substring between start and end
-  let content = html.slice(start + 1, end);
-  // Check if there are any '<' or '>' within the substring (excluding the outer ones)
-  if (content.includes(">") || content.includes("<")) {
-    return true; // in content
-  }
-  return false;
-
-}
-function handleWrongPwd() {
-  if (showPasswordPage) {
-    return getHTMLResponse(pwdPage);
-  } else {
-    return getHTMLResponse("<h1>403 Forbidden</h1><br>You do not have access to view this webpage.");
-  }
-}
-function getHTMLResponse(html) {
-  return new Response(html, {
-    headers: {
-      "Content-Type": "text/html; charset=utf-8"
-    }
-  });
-}
-
-function getRedirect(url) {
-  return Response.redirect(url, 301);
-}
-
-// https://stackoverflow.com/questions/14480345/how-to-get-the-nth-occurrence-in-a-string
-function nthIndex(str, pat, n) {
-  var L = str.length, i = -1;
-  while (n-- && i++ < L) {
-    i = str.indexOf(pat, i);
-    if (i < 0) break;
-  }
-  return i;
+  // 404处理
+  return new Response('404 Not Found', { status: 404, headers });
 }
