@@ -1,100 +1,126 @@
 ﻿// Cloudflare Worker 完整代码 - PortScan Pro
 addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
-});
+  event.respondWith(handleRequest(event.request))
+})
 
 // 端口信息数据库
 const portDatabase = {
-  // 常用Web端口
-  80: { service: 'HTTP', protocol: 'TCP', description: '超文本传输协议 - Web服务器' },
-  443: { service: 'HTTPS', protocol: 'TCP', description: '安全超文本传输协议 - SSL/TLS加密Web服务' },
-  8080: { service: 'HTTP-ALT', protocol: 'TCP', description: '替代HTTP端口，常用于代理或开发服务器' },
-  8443: { service: 'HTTPS-ALT', protocol: 'TCP', description: '替代HTTPS端口' },
-  3000: { service: 'Node.js', protocol: 'TCP', description: 'Node.js开发服务器默认端口' },
-  4200: { service: 'Angular', protocol: 'TCP', description: 'Angular开发服务器端口' },
-  
-  // 邮件服务
-  25: { service: 'SMTP', protocol: 'TCP', description: '简单邮件传输协议 - 发送邮件' },
-  110: { service: 'POP3', protocol: 'TCP', description: '邮局协议版本3 - 接收邮件' },
-  143: { service: 'IMAP', protocol: 'TCP', description: '互联网消息访问协议 - 邮件访问' },
-  465: { service: 'SMTPS', protocol: 'TCP', description: 'SSL加密的SMTP' },
-  587: { service: 'SMTP-SUB', protocol: 'TCP', description: 'SMTP提交端口' },
-  993: { service: 'IMAPS', protocol: 'TCP', description: 'SSL加密的IMAP' },
-  995: { service: 'POP3S', protocol: 'TCP', description: 'SSL加密的POP3' },
-  
-  // 远程访问
-  22: { service: 'SSH', protocol: 'TCP', description: '安全外壳协议 - 安全远程登录' },
-  23: { service: 'Telnet', protocol: 'TCP', description: '远程终端协议（不安全）' },
-  3389: { service: 'RDP', protocol: 'TCP', description: '远程桌面协议 - Windows远程访问' },
-  5900: { service: 'VNC', protocol: 'TCP', description: '虚拟网络计算 - 远程桌面' },
-  
-  // 文件传输
-  21: { service: 'FTP', protocol: 'TCP', description: '文件传输协议 - 控制连接' },
   20: { service: 'FTP-DATA', protocol: 'TCP', description: 'FTP数据连接' },
+  21: { service: 'FTP', protocol: 'TCP', description: '文件传输协议 - 控制连接' },
+  22: { service: 'SSH', protocol: 'TCP', description: '安全外壳协议 - 安全远程登录' },
+  23: { service: 'Telnet', protocol: 'TCP', description: '远程终端协议' },
+  25: { service: 'SMTP', protocol: 'TCP', description: '简单邮件传输协议 - 发送邮件' },
+  53: { service: 'DNS', protocol: 'TCP/UDP', description: '域名系统 - 域名解析' },
+  67: { service: 'DHCP-SERVER', protocol: 'UDP', description: 'DHCP服务器端口' },
+  68: { service: 'DHCP-CLIENT', protocol: 'UDP', description: 'DHCP客户端端口' },
   69: { service: 'TFTP', protocol: 'UDP', description: '简单文件传输协议' },
-  2049: { service: 'NFS', protocol: 'TCP/UDP', description: '网络文件系统' },
+  80: { service: 'HTTP', protocol: 'TCP', description: '超文本传输协议 - Web服务器' },
+  110: { service: 'POP3', protocol: 'TCP', description: '邮局协议版本3 - 接收邮件' },
+  123: { service: 'NTP', protocol: 'UDP', description: '网络时间协议' },
+  135: { service: 'MSRPC', protocol: 'TCP', description: 'Microsoft RPC服务' },
   137: { service: 'NetBIOS', protocol: 'UDP', description: 'NetBIOS名称服务' },
   138: { service: 'NetBIOS', protocol: 'UDP', description: 'NetBIOS数据报服务' },
   139: { service: 'NetBIOS', protocol: 'TCP', description: 'NetBIOS会话服务' },
-  445: { service: 'SMB', protocol: 'TCP', description: '服务器消息块 - 文件共享' },
-  
-  // 数据库
-  3306: { service: 'MySQL', protocol: 'TCP', description: 'MySQL数据库服务器' },
-  5432: { service: 'PostgreSQL', protocol: 'TCP', description: 'PostgreSQL数据库' },
-  27017: { service: 'MongoDB', protocol: 'TCP', description: 'MongoDB数据库' },
-  6379: { service: 'Redis', protocol: 'TCP', description: 'Redis键值存储' },
-  1521: { service: 'Oracle', protocol: 'TCP', description: 'Oracle数据库' },
-  1433: { service: 'MSSQL', protocol: 'TCP', description: 'Microsoft SQL Server' },
-  
-  // DNS服务
-  53: { service: 'DNS', protocol: 'TCP/UDP', description: '域名系统 - 域名解析' },
-  
-  // DHCP
-  67: { service: 'DHCP-SERVER', protocol: 'UDP', description: 'DHCP服务器端口' },
-  68: { service: 'DHCP-CLIENT', protocol: 'UDP', description: 'DHCP客户端端口' },
-  
-  // 网络管理
+  143: { service: 'IMAP', protocol: 'TCP', description: '互联网消息访问协议 - 邮件访问' },
   161: { service: 'SNMP', protocol: 'UDP', description: '简单网络管理协议' },
   162: { service: 'SNMP-TRAP', protocol: 'UDP', description: 'SNMP陷阱端口' },
-  
-  // 代理服务器
-  1080: { service: 'SOCKS', protocol: 'TCP', description: 'SOCKS代理服务器' },
-  3128: { service: 'Squid', protocol: 'TCP', description: 'Squid HTTP代理' },
-  8081: { service: 'Proxy', protocol: 'TCP', description: '通用代理端口' },
-  
-  // 其他服务
-  111: { service: 'RPC', protocol: 'TCP/UDP', description: '远程过程调用' },
-  123: { service: 'NTP', protocol: 'UDP', description: '网络时间协议' },
-  135: { service: 'MSRPC', protocol: 'TCP', description: 'Microsoft RPC服务' },
   389: { service: 'LDAP', protocol: 'TCP', description: '轻量级目录访问协议' },
+  443: { service: 'HTTPS', protocol: 'TCP', description: '安全超文本传输协议 - SSL/TLS加密Web服务' },
+  445: { service: 'SMB', protocol: 'TCP', description: '服务器消息块 - 文件共享' },
+  465: { service: 'SMTPS', protocol: 'TCP', description: 'SSL加密的SMTP' },
+  514: { service: 'SYSLOG', protocol: 'UDP', description: '系统日志' },
+  515: { service: 'LPD', protocol: 'TCP', description: '打印服务' },
+  587: { service: 'SMTP-SUB', protocol: 'TCP', description: 'SMTP提交端口' },
+  631: { service: 'IPP', protocol: 'TCP', description: '互联网打印协议' },
   636: { service: 'LDAPS', protocol: 'TCP', description: 'SSL加密的LDAP' },
-  873: { service: 'Rsync', protocol: 'TCP', description: '远程文件同步服务' },
-  902: { service: 'VMware', protocol: 'TCP', description: 'VMware服务器控制台' },
-  11211: { service: 'Memcached', protocol: 'TCP', description: 'Memcached缓存服务' },
-  27015: { service: 'Steam', protocol: 'TCP/UDP', description: 'Steam游戏服务' },
-  
-  // 常见应用
-  1883: { service: 'MQTT', protocol: 'TCP', description: 'MQTT消息队列遥测传输' },
+  993: { service: 'IMAPS', protocol: 'TCP', description: 'SSL加密的IMAP' },
+  995: { service: 'POP3S', protocol: 'TCP', description: 'SSL加密的POP3' },
+  1080: { service: 'SOCKS', protocol: 'TCP', description: 'SOCKS代理服务器' },
+  1194: { service: 'OpenVPN', protocol: 'UDP', description: 'OpenVPN服务' },
+  1433: { service: 'MSSQL', protocol: 'TCP', description: 'Microsoft SQL Server' },
+  1434: { service: 'MSSQL', protocol: 'UDP', description: 'Microsoft SQL Server浏览器' },
+  1521: { service: 'Oracle', protocol: 'TCP', description: 'Oracle数据库' },
+  1723: { service: 'PPTP', protocol: 'TCP', description: '点对点隧道协议' },
+  2049: { service: 'NFS', protocol: 'TCP/UDP', description: '网络文件系统' },
+  2082: { service: 'cPanel', protocol: 'TCP', description: 'cPanel控制面板' },
+  2083: { service: 'cPanel SSL', protocol: 'TCP', description: 'cPanel控制面板SSL' },
+  2086: { service: 'WHM', protocol: 'TCP', description: 'WebHost Manager' },
+  2087: { service: 'WHM SSL', protocol: 'TCP', description: 'WebHost Manager SSL' },
+  2095: { service: 'Webmail', protocol: 'TCP', description: 'Web邮件服务' },
+  2096: { service: 'Webmail SSL', protocol: 'TCP', description: 'Web邮件服务SSL' },
+  2222: { service: 'DirectAdmin', protocol: 'TCP', description: 'DirectAdmin控制面板' },
+  2375: { service: 'Docker', protocol: 'TCP', description: 'Docker API' },
+  2376: { service: 'Docker SSL', protocol: 'TCP', description: 'Docker API SSL' },
+  3000: { service: 'Node.js', protocol: 'TCP', description: 'Node.js开发服务器' },
+  3306: { service: 'MySQL', protocol: 'TCP', description: 'MySQL数据库服务器' },
+  3389: { service: 'RDP', protocol: 'TCP', description: '远程桌面协议 - Windows远程访问' },
+  4000: { service: 'RemoteAnything', protocol: 'TCP', description: '远程访问工具' },
+  4040: { service: 'Jenkins', protocol: 'TCP', description: 'Jenkins CI服务器' },
+  4369: { service: 'Erlang', protocol: 'TCP', description: 'Erlang端口映射' },
+  5000: { service: 'UPnP', protocol: 'TCP', description: '通用即插即用' },
+  5432: { service: 'PostgreSQL', protocol: 'TCP', description: 'PostgreSQL数据库' },
+  5601: { service: 'Kibana', protocol: 'TCP', description: 'Kibana数据可视化' },
   5672: { service: 'AMQP', protocol: 'TCP', description: '高级消息队列协议' },
-  15672: { service: 'RabbitMQ', protocol: 'TCP', description: 'RabbitMQ管理界面' },
+  5900: { service: 'VNC', protocol: 'TCP', description: '虚拟网络计算 - 远程桌面' },
+  5984: { service: 'CouchDB', protocol: 'TCP', description: 'CouchDB数据库' },
+  6379: { service: 'Redis', protocol: 'TCP', description: 'Redis键值存储' },
+  6443: { service: 'Kubernetes', protocol: 'TCP', description: 'Kubernetes API' },
+  6667: { service: 'IRC', protocol: 'TCP', description: '互联网中继聊天' },
+  7000: { service: 'Cassandra', protocol: 'TCP', description: 'Cassandra数据库' },
+  7001: { service: 'Cassandra', protocol: 'TCP', description: 'Cassandra数据库' },
+  7199: { service: 'Cassandra', protocol: 'TCP', description: 'Cassandra数据库' },
+  8000: { service: 'HTTP-ALT', protocol: 'TCP', description: '替代HTTP端口' },
+  8001: { service: 'HTTP-ALT', protocol: 'TCP', description: '替代HTTP端口' },
+  8008: { service: 'HTTP-ALT', protocol: 'TCP', description: '替代HTTP端口' },
+  8009: { service: 'AJP', protocol: 'TCP', description: 'Apache JServ协议' },
+  8080: { service: 'HTTP-PROXY', protocol: 'TCP', description: 'HTTP代理服务器' },
+  8081: { service: 'HTTP-PROXY', protocol: 'TCP', description: 'HTTP代理服务器' },
+  8083: { service: 'HTTP-PROXY', protocol: 'TCP', description: 'HTTP代理服务器' },
+  8088: { service: 'HTTP-PROXY', protocol: 'TCP', description: 'HTTP代理服务器' },
+  8090: { service: 'HTTP-PROXY', protocol: 'TCP', description: 'HTTP代理服务器' },
+  8091: { service: 'HTTP-PROXY', protocol: 'TCP', description: 'HTTP代理服务器' },
+  8100: { service: 'HTTP-PROXY', protocol: 'TCP', description: 'HTTP代理服务器' },
+  8181: { service: 'HTTP-PROXY', protocol: 'TCP', description: 'HTTP代理服务器' },
+  8200: { service: 'GoCD', protocol: 'TCP', description: 'GoCD持续集成' },
+  8443: { service: 'HTTPS-ALT', protocol: 'TCP', description: '替代HTTPS端口' },
+  8500: { service: 'Consul', protocol: 'TCP', description: 'Consul服务发现' },
+  8649: { service: 'Graphite', protocol: 'TCP', description: 'Graphite监控' },
+  8888: { service: 'HTTP-ALT', protocol: 'TCP', description: '替代HTTP端口' },
+  9000: { service: 'SonarQube', protocol: 'TCP', description: 'SonarQube代码质量' },
+  9001: { service: 'Tor', protocol: 'TCP', description: 'Tor网络' },
+  9042: { service: 'Cassandra', protocol: 'TCP', description: 'Cassandra数据库' },
+  9092: { service: 'Kafka', protocol: 'TCP', description: 'Apache Kafka' },
+  9100: { service: 'PDL', protocol: 'TCP', description: '打印机守护进程' },
   9200: { service: 'Elasticsearch', protocol: 'TCP', description: 'Elasticsearch REST API' },
   9300: { service: 'Elasticsearch', protocol: 'TCP', description: 'Elasticsearch集群通信' },
-  5601: { service: 'Kibana', protocol: 'TCP', description: 'Kibana数据可视化' },
-};
+  9418: { service: 'Git', protocol: 'TCP', description: 'Git版本控制' },
+  9999: { service: 'HTTP-ALT', protocol: 'TCP', description: '替代HTTP端口' },
+  10000: { service: 'Webmin', protocol: 'TCP', description: 'Webmin管理面板' },
+  11211: { service: 'Memcached', protocol: 'TCP', description: 'Memcached缓存服务' },
+  15672: { service: 'RabbitMQ', protocol: 'TCP', description: 'RabbitMQ管理界面' },
+  27017: { service: 'MongoDB', protocol: 'TCP', description: 'MongoDB数据库' },
+  27018: { service: 'MongoDB', protocol: 'TCP', description: 'MongoDB数据库' },
+  28015: { service: 'RethinkDB', protocol: 'TCP', description: 'RethinkDB数据库' },
+  50000: { service: 'DB2', protocol: 'TCP', description: 'IBM DB2数据库' },
+  50030: { service: 'Hadoop', protocol: 'TCP', description: 'Hadoop任务跟踪器' },
+  50060: { service: 'Hadoop', protocol: 'TCP', description: 'Hadoop任务跟踪器' },
+  50070: { service: 'Hadoop', protocol: 'TCP', description: 'Hadoop NameNode' },
+  50075: { service: 'Hadoop', protocol: 'TCP', description: 'Hadoop DataNode' }
+}
 
 // 获取端口描述信息
 function getPortDescription(port) {
   const portInfo = portDatabase[port] || { 
-    service: '未知', 
+    service: 'Unknown', 
     protocol: 'TCP',
-    description: '未知服务'
-  };
+    description: 'Unknown service'
+  }
   
   return {
     service: portInfo.service,
     protocol: portInfo.protocol,
     description: portInfo.description
-  };
+  }
 }
 
 // 处理CORS
@@ -104,36 +130,36 @@ function handleCORS() {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, X-Target, X-Port, X-Timeout, X-Scan-Type',
-      'Access-Control-Max-Age': '86400',
+      'Access-Control-Max-Age': '86400'
     }
-  });
+  })
 }
 
 // 处理扫描请求
 async function handleScan(request) {
-  const url = new URL(request.url);
+  const url = new URL(request.url)
   
   // 获取参数
-  const target = url.searchParams.get('target') || request.headers.get('X-Target');
-  const port = parseInt(url.searchParams.get('port') || request.headers.get('X-Port') || '80');
-  const timeout = parseInt(url.searchParams.get('timeout') || request.headers.get('X-Timeout') || '2000');
-  const scanType = url.searchParams.get('scanType') || request.headers.get('X-Scan-Type') || 'common';
+  const target = url.searchParams.get('target') || request.headers.get('X-Target')
+  const port = parseInt(url.searchParams.get('port') || request.headers.get('X-Port') || '80')
+  const timeout = parseInt(url.searchParams.get('timeout') || request.headers.get('X-Timeout') || '2000')
+  const scanType = url.searchParams.get('scanType') || request.headers.get('X-Scan-Type') || 'common'
   
   if (!target) {
-    return jsonResponse({ error: '目标地址不能为空' }, 400);
+    return jsonResponse({ error: 'Target address is required' }, 400)
   }
   
   // 验证端口范围
   if (port < 1 || port > 65535) {
-    return jsonResponse({ error: '端口号必须在1-65535之间' }, 400);
+    return jsonResponse({ error: 'Port must be between 1 and 65535' }, 400)
   }
   
   try {
-    const startTime = Date.now();
-    const result = await testPort(target, port, timeout);
-    const responseTime = Date.now() - startTime;
+    const startTime = Date.now()
+    const result = await testPort(target, port, timeout)
+    const responseTime = Date.now() - startTime
     
-    const portInfo = getPortDescription(port);
+    const portInfo = getPortDescription(port)
     
     return jsonResponse({
       port: port,
@@ -146,27 +172,27 @@ async function handleScan(request) {
       scanType: scanType,
       timestamp: new Date().toISOString(),
       headers: result.headers || {}
-    });
+    })
     
   } catch (error) {
     return jsonResponse({ 
-      error: '扫描失败',
+      error: 'Scan failed',
       message: error.message,
       port: port,
       target: target,
       status: 'error'
-    }, 500);
+    }, 500)
   }
 }
 
 // 测试端口连接
 async function testPort(target, port, timeout) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
   
   try {
     // 尝试HTTP连接
-    const httpUrl = `http://${target}:${port}`;
+    const httpUrl = `http://${target}:${port}`
     const httpResponse = await fetch(httpUrl, {
       signal: controller.signal,
       method: 'HEAD',
@@ -183,27 +209,27 @@ async function testPort(target, port, timeout) {
         mirage: false
       }
     }).catch(e => {
-      if (e.name !== 'AbortError') throw e;
-      return null;
-    });
+      if (e.name !== 'AbortError') throw e
+      return null
+    })
     
-    clearTimeout(timeoutId);
+    clearTimeout(timeoutId)
     
     if (httpResponse) {
-      const headers = {};
+      const headers = {}
       httpResponse.headers.forEach((value, key) => {
-        headers[key] = value;
-      });
+        headers[key] = value
+      })
       
       return {
         status: 'open',
         headers: headers,
         statusCode: httpResponse.status
-      };
+      }
     }
     
     // 如果HTTP失败，尝试HTTPS
-    const httpsUrl = `https://${target}:${port}`;
+    const httpsUrl = `https://${target}:${port}`
     const httpsResponse = await fetch(httpsUrl, {
       signal: controller.signal,
       method: 'HEAD',
@@ -220,166 +246,145 @@ async function testPort(target, port, timeout) {
         mirage: false
       }
     }).catch(e => {
-      if (e.name !== 'AbortError') throw e;
-      return null;
-    });
+      if (e.name !== 'AbortError') throw e
+      return null
+    })
     
     if (httpsResponse) {
-      const headers = {};
+      const headers = {}
       httpsResponse.headers.forEach((value, key) => {
-        headers[key] = value;
-      });
+        headers[key] = value
+      })
       
       return {
         status: 'open',
         headers: headers,
         statusCode: httpsResponse.status
-      };
+      }
     }
     
-    // 如果都失败，尝试TCP连接（通过fetch模拟）
-    const tcpTest = await testTCPConnection(target, port, timeout);
+    // 如果都失败，尝试TCP连接
+    try {
+      // 创建一个简单的TCP连接测试
+      const tcpResponse = await fetch(httpUrl, {
+        signal: controller.signal,
+        method: 'GET',
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'PortScan-Pro/1.0 TCP Test'
+        }
+      }).catch(e => {
+        // 不同的错误类型表示不同的状态
+        if (e.name === 'AbortError') {
+          return { status: 'timeout' }
+        } else if (e.message.includes('Failed to fetch') || e.message.includes('fetch failed')) {
+          return { status: 'closed' }
+        }
+        throw e
+      })
+      
+      if (tcpResponse && tcpResponse.status === 'timeout') {
+        return {
+          status: 'filtered',
+          headers: {},
+          statusCode: 0
+        }
+      } else if (tcpResponse && tcpResponse.status === 'closed') {
+        return {
+          status: 'closed',
+          headers: {},
+          statusCode: 0
+        }
+      }
+      
+    } catch (tcpError) {
+      console.log('TCP test error:', tcpError.message)
+    }
     
-    if (tcpTest.open) {
-      return {
-        status: 'open',
-        headers: {},
-        statusCode: 0
-      };
-    } else if (tcpTest.filtered) {
-      return {
-        status: 'filtered',
-        headers: {},
-        statusCode: 0
-      };
-    } else {
-      return {
-        status: 'closed',
-        headers: {},
-        statusCode: 0
-      };
+    return {
+      status: 'closed',
+      headers: {},
+      statusCode: 0
     }
     
   } catch (error) {
-    clearTimeout(timeoutId);
+    clearTimeout(timeoutId)
     
     if (error.name === 'AbortError') {
       return {
         status: 'filtered',
         headers: {},
         statusCode: 0
-      };
+      }
     }
     
-    throw error;
-  }
-}
-
-// 模拟TCP连接测试
-async function testTCPConnection(target, port, timeout) {
-  // 使用fetch模拟TCP连接测试
-  const testUrl = `http://${target}:${port}/`;
-  
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-    
-    const response = await fetch(testUrl, {
-      signal: controller.signal,
-      method: 'GET',
-      redirect: 'manual',
-      headers: {
-        'User-Agent': 'PortScan-Pro/1.0 TCP Test'
-      },
-      cf: {
-        cacheTtl: 0
-      }
-    }).catch(e => {
-      if (e.name !== 'AbortError') {
-        // 连接被拒绝或网络错误
-        return { error: e.message };
-      }
-      return { timeout: true };
-    });
-    
-    clearTimeout(timeoutId);
-    
-    if (response && response.error) {
-      // 连接被拒绝，端口可能关闭
-      return { open: false, filtered: false };
-    } else if (response && response.timeout) {
-      // 连接超时，端口可能被过滤
-      return { open: false, filtered: true };
-    } else {
-      // 有响应，端口开放
-      return { open: true, filtered: false };
-    }
-    
-  } catch (error) {
-    return { open: false, filtered: false, error: error.message };
+    throw error
   }
 }
 
 // 批量扫描端口
 async function handleBatchScan(request) {
-  const url = new URL(request.url);
-  const target = url.searchParams.get('target');
-  const scanType = url.searchParams.get('scanType') || 'common';
-  const timeout = parseInt(url.searchParams.get('timeout') || '2000');
+  const url = new URL(request.url)
+  const target = url.searchParams.get('target')
+  const scanType = url.searchParams.get('scanType') || 'common'
+  const timeout = parseInt(url.searchParams.get('timeout') || '2000')
   
   if (!target) {
-    return jsonResponse({ error: '目标地址不能为空' }, 400);
+    return jsonResponse({ error: 'Target address is required' }, 400)
   }
   
   // 根据扫描类型确定端口列表
-  let ports = [];
+  let ports = []
   switch(scanType) {
     case 'common':
-      ports = generateCommonPorts();
-      break;
+      ports = generateCommonPorts()
+      break
     case 'web':
-      ports = generateWebPorts();
-      break;
+      ports = generateWebPorts()
+      break
     case 'database':
-      ports = generateDatabasePorts();
-      break;
+      ports = generateDatabasePorts()
+      break
     case 'critical':
-      ports = generateCriticalPorts();
-      break;
+      ports = generateCriticalPorts()
+      break
+    case 'all':
+      ports = generateAllPorts()
+      break
     default:
-      ports = generateCommonPorts();
+      ports = generateCommonPorts()
   }
   
   // 限制最大扫描端口数
-  const maxPorts = 1000;
+  const maxPorts = 500
   if (ports.length > maxPorts) {
-    ports = ports.slice(0, maxPorts);
+    ports = ports.slice(0, maxPorts)
   }
   
   // 开始批量扫描
-  const results = [];
-  const batchSize = 20; // 并发数
+  const results = []
+  const batchSize = 10 // 降低并发数以避免限制
   
   for (let i = 0; i < ports.length; i += batchSize) {
-    const batch = ports.slice(i, i + batchSize);
+    const batch = ports.slice(i, i + batchSize)
     const batchPromises = batch.map(port => 
       testPort(target, port, timeout).then(result => ({
         port,
         status: result.status,
-        responseTime: 0 // 简化处理
+        responseTime: 0
       })).catch(error => ({
         port,
         status: 'error',
         error: error.message
       }))
-    );
+    )
     
-    const batchResults = await Promise.all(batchPromises);
-    results.push(...batchResults);
+    const batchResults = await Promise.all(batchPromises)
+    results.push(...batchResults)
     
     // 每批扫描后等待片刻，避免过载
     if (i + batchSize < ports.length) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 100))
     }
   }
   
@@ -392,7 +397,7 @@ async function handleBatchScan(request) {
     filteredPorts: results.filter(r => r.status === 'filtered').length,
     results: results,
     timestamp: new Date().toISOString()
-  });
+  })
 }
 
 // 生成常用端口列表
@@ -406,7 +411,7 @@ function generateCommonPorts() {
     8008, 8009, 8080, 8081, 8083, 8088, 8090, 8091, 8100, 8181, 8200, 8443,
     8500, 8649, 8888, 9000, 9001, 9042, 9092, 9100, 9200, 9300, 9418, 9999,
     10000, 11211, 15672, 27017, 27018, 28015, 50000, 50030, 50060, 50070, 50075
-  ];
+  ]
 }
 
 // 生成Web端口列表
@@ -418,7 +423,7 @@ function generateWebPorts() {
     8069, 8080, 8081, 8088, 8090, 8091, 8118, 8123, 8172, 8222, 8243, 8280,
     8281, 8333, 8443, 8500, 8834, 8880, 8888, 8983, 9000, 9043, 9060, 9080,
     9090, 9091, 9200, 9443, 9800, 9981, 12443, 16080, 18091, 18092
-  ];
+  ]
 }
 
 // 生成数据库端口列表
@@ -430,7 +435,7 @@ function generateDatabasePorts() {
     8098, 8182, 8649, 8675, 9001, 9042, 9160, 9200, 9300, 11211, 11214, 11215,
     18091, 18092, 20000, 27017, 27018, 27019, 28015, 28017, 29015, 50000, 50010,
     50020, 50030, 50060, 50070, 50075, 50090
-  ];
+  ]
 }
 
 // 生成关键端口列表
@@ -438,7 +443,29 @@ function generateCriticalPorts() {
   return [
     21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995, 1723,
     3306, 3389, 5900, 8080
-  ];
+  ]
+}
+
+// 生成全端口列表（代表性）
+function generateAllPorts() {
+  const ports = new Set()
+  
+  // 添加常用端口
+  generateCommonPorts().forEach(p => ports.add(p))
+  generateWebPorts().forEach(p => ports.add(p))
+  generateDatabasePorts().forEach(p => ports.add(p))
+  
+  // 添加一些额外端口
+  for (let i = 1; i <= 1000; i++) {
+    ports.add(i)
+  }
+  
+  // 添加一些知名端口
+  for (let i = 1001; i <= 10000; i += 100) {
+    ports.add(i)
+  }
+  
+  return Array.from(ports).sort((a, b) => a - b)
 }
 
 // JSON响应
@@ -450,11 +477,41 @@ function jsonResponse(data, status = 200) {
       'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'no-cache, no-store, must-revalidate'
     }
-  });
+  })
 }
 
-// HTML页面
-const HTML = `<!DOCTYPE html>
+// 主请求处理器
+async function handleRequest(request) {
+  const url = new URL(request.url)
+  
+  // 处理CORS预检请求
+  if (request.method === 'OPTIONS') {
+    return handleCORS()
+  }
+  
+  // API路由
+  if (url.pathname === '/scan') {
+    return handleScan(request)
+  }
+  
+  if (url.pathname === '/batch') {
+    return handleBatchScan(request)
+  }
+  
+  // 返回主页
+  return new Response(getHTML(), {
+    headers: {
+      'Content-Type': 'text/html;charset=UTF-8',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache, no-store, must-revalidate'
+    }
+  })
+}
+
+// 获取HTML页面
+function getHTML() {
+  return `
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -935,7 +992,7 @@ const HTML = `<!DOCTYPE html>
                         <strong>扫描节点:</strong> Cloudflare全球网络
                     </div>
                     <div class="info-item">
-                        <strong>并发线程:</strong> 20个并发请求
+                        <strong>并发线程:</strong> 10个并发请求
                     </div>
                     <div class="info-item">
                         <strong>网络延迟:</strong> &lt; 50ms
@@ -1037,14 +1094,11 @@ const HTML = `<!DOCTYPE html>
                 const from = parseInt(document.getElementById('portFrom').value) || 1;
                 const to = parseInt(document.getElementById('portTo').value) || 1024;
                 ports = generatePortRange(from, to);
-            } else if (scanType === 'all') {
-                // 全端口扫描 - 使用代表性端口
-                ports = generateAllPortsRepresentative();
             } else {
                 // 批量扫描
                 try {
-                    document.getElementById('scanStatus').textContent = `正在获取端口列表...`;
-                    const batchResponse = await fetch(`${workerUrl}/batch?target=${encodeURIComponent(target)}&scanType=${scanType}&timeout=${timeout}`);
+                    document.getElementById('scanStatus').textContent = '正在获取端口列表...';
+                    const batchResponse = await fetch(workerUrl + '/batch?target=' + encodeURIComponent(target) + '&scanType=' + scanType + '&timeout=' + timeout);
                     const batchData = await batchResponse.json();
                     
                     if (batchData.error) {
@@ -1087,7 +1141,7 @@ const HTML = `<!DOCTYPE html>
             }
             
             // 限制最大端口数
-            const maxPorts = 500;
+            const maxPorts = 200;
             if (ports.length > maxPorts) {
                 ports = ports.slice(0, maxPorts);
             }
@@ -1097,11 +1151,11 @@ const HTML = `<!DOCTYPE html>
             updateStats();
             
             // 开始逐个扫描
-            document.getElementById('scanStatus').textContent = `正在扫描 ${target} (${ports.length}个端口)...`;
+            document.getElementById('scanStatus').textContent = '正在扫描 ' + target + ' (' + ports.length + '个端口)...';
             currentScanId = Date.now();
             
             // 并发扫描
-            const batchSize = 20;
+            const batchSize = 10;
             for (let i = 0; i < ports.length; i += batchSize) {
                 if (!isScanning) break;
                 
@@ -1114,7 +1168,7 @@ const HTML = `<!DOCTYPE html>
                             }
                         })
                         .catch(error => {
-                            console.error(`端口 ${port} 扫描错误:`, error);
+                            console.error('端口 ' + port + ' 扫描错误:', error);
                         })
                 );
                 
@@ -1140,7 +1194,7 @@ const HTML = `<!DOCTYPE html>
             if (!isScanning) return null;
             
             try {
-                const response = await fetch(`${workerUrl}/scan?target=${encodeURIComponent(target)}&port=${port}&timeout=${timeout}&scanType=${scanType}`, {
+                const response = await fetch(workerUrl + '/scan?target=' + encodeURIComponent(target) + '&port=' + port + '&timeout=' + timeout + '&scanType=' + scanType, {
                     headers: {
                         'X-Target': target,
                         'X-Port': port,
@@ -1170,7 +1224,7 @@ const HTML = `<!DOCTYPE html>
                 
             } catch (error) {
                 scannedPorts++;
-                console.error(`端口 ${port} 扫描失败:`, error);
+                console.error('端口 ' + port + ' 扫描失败:', error);
                 return null;
             }
         }
@@ -1207,7 +1261,7 @@ const HTML = `<!DOCTYPE html>
             const url = URL.createObjectURL(dataBlob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `portscan-results-${Date.now()}.json`;
+            link.download = 'portscan-results-' + Date.now() + '.json';
             link.click();
             URL.revokeObjectURL(url);
         }
@@ -1228,19 +1282,11 @@ const HTML = `<!DOCTYPE html>
                 statusText = '被过滤';
             }
             
-            tr.innerHTML = \`
-                <td><strong>\${port}</strong></td>
-                <td><span class="\${statusClass}">\${statusText}</span></td>
-                <td>
-                    <div>\${service}</div>
-                    <div class="port-info">TCP协议</div>
-                </td>
-                <td>\${responseTime}ms</td>
-                <td>
-                    <div>\${description}</div>
-                    <div class="result-details">端口 \${port} - \${statusText}</div>
-                </td>
-            \`;
+            tr.innerHTML = '<td><strong>' + port + '</strong></td>' +
+                '<td><span class="' + statusClass + '">' + statusText + '</span></td>' +
+                '<td><div>' + service + '</div><div class="port-info">TCP协议</div></td>' +
+                '<td>' + responseTime + 'ms</td>' +
+                '<td><div>' + description + '</div><div class="result-details">端口 ' + port + ' - ' + statusText + '</div></td>';
             
             // 插入到表格顶部（最新结果在上面）
             tbody.insertBefore(tr, tbody.firstChild);
@@ -1249,7 +1295,7 @@ const HTML = `<!DOCTYPE html>
         // 更新进度
         function updateProgress() {
             const progress = totalPortsToScan > 0 ? (scannedPorts / totalPortsToScan) * 100 : 0;
-            document.getElementById('progressBar').style.width = \`\${progress}%\`;
+            document.getElementById('progressBar').style.width = progress + '%';
         }
 
         // 更新统计
@@ -1267,33 +1313,6 @@ const HTML = `<!DOCTYPE html>
                 ports.push(i);
             }
             return ports;
-        }
-
-        function generateAllPortsRepresentative() {
-            // 生成代表性端口，而不是全部65535个
-            const ports = new Set();
-            
-            // 添加常用端口
-            [20, 21, 22, 23, 25, 53, 67, 68, 69, 80, 110, 123, 135, 137, 138, 139,
-             143, 161, 162, 389, 443, 445, 465, 514, 515, 587, 631, 636, 993, 995,
-             1080, 1194, 1433, 1434, 1521, 1723, 2049, 2082, 2083, 2086, 2087, 2095,
-             2096, 2222, 2375, 2376, 3000, 3306, 3389, 4000, 4040, 4369, 5000, 5432,
-             5601, 5672, 5900, 5984, 6379, 6443, 6667, 7000, 7001, 7199, 8000, 8001,
-             8008, 8009, 8080, 8081, 8083, 8088, 8090, 8091, 8100, 8181, 8200, 8443,
-             8500, 8649, 8888, 9000, 9001, 9042, 9092, 9100, 9200, 9300, 9418, 9999,
-             10000, 11211, 15672, 27017, 27018, 28015, 50000, 50030, 50060, 50070, 50075].forEach(p => ports.add(p));
-            
-            // 每1000个端口添加一个代表性端口
-            for (let i = 1; i <= 65535; i += 1000) {
-                ports.add(i);
-            }
-            
-            // 添加一些随机端口
-            for (let i = 0; i < 50; i++) {
-                ports.add(Math.floor(Math.random() * 65535) + 1);
-            }
-            
-            return Array.from(ports).sort((a, b) => a - b);
         }
 
         function getPortsByType(type) {
@@ -1324,6 +1343,15 @@ const HTML = `<!DOCTYPE html>
                             8098, 8182, 8649, 8675, 9001, 9042, 9160, 9200, 9300, 11211, 11214, 11215,
                             18091, 18092, 20000, 27017, 27018, 27019, 28015, 28017, 29015, 50000, 50010,
                             50020, 50030, 50060, 50070, 50075, 50090];
+                case 'all':
+                    // 生成代表性端口列表
+                    const allPorts = new Set();
+                    for (let i = 1; i <= 1000; i++) allPorts.add(i);
+                    for (let i = 1001; i <= 10000; i += 100) allPorts.add(i);
+                    for (let i = 10001; i <= 20000; i += 500) allPorts.add(i);
+                    for (let i = 20001; i <= 40000; i += 1000) allPorts.add(i);
+                    for (let i = 40001; i <= 65535; i += 2000) allPorts.add(i);
+                    return Array.from(allPorts).sort((a, b) => a - b).slice(0, 500);
                 default:
                     return [20, 21, 22, 23, 25, 53, 80, 110, 143, 443, 3389, 8080];
             }
@@ -1371,47 +1399,10 @@ const HTML = `<!DOCTYPE html>
                 3389: 'RDP远程桌面协议，用于Windows远程访问',
                 8080: 'HTTP代理端口，常用于开发或代理服务器'
             };
-            return descriptions[port] || \`端口 \${port} - 网络服务端口\`;
+            return descriptions[port] || '端口 ' + port + ' - 网络服务端口';
         }
     </script>
 </body>
-</html>`;
-
-// 主请求处理器
-async function handleRequest(request) {
-  const url = new URL(request.url);
-  
-  // 处理CORS预检请求
-  if (request.method === 'OPTIONS') {
-    return handleCORS();
-  }
-  
-  // API路由
-  if (url.pathname === '/scan') {
-    return handleScan(request);
-  }
-  
-  if (url.pathname === '/batch') {
-    return handleBatchScan(request);
-  }
-  
-  // 返回主页
-  if (url.pathname === '/' || url.pathname === '/index.html') {
-    return new Response(HTML, {
-      headers: {
-        'Content-Type': 'text/html;charset=UTF-8',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'no-cache, no-store, must-revalidate'
-      }
-    });
-  }
-  
-  // 默认返回主页
-  return new Response(HTML, {
-    headers: {
-      'Content-Type': 'text/html;charset=UTF-8',
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'no-cache, no-store, must-revalidate'
-    }
-  });
+</html>
+  `
 }
