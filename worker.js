@@ -1433,4 +1433,3 @@ function nthIndex(str, pat, n) {
   }
   return i;
 }
-[file content end]
