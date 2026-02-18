@@ -29,13 +29,14 @@ export default {
   }
 };
 
+// ---------- 代理请求处理 ----------
 async function handleProxyRequest(request, targetUrl, url) {
   const targetHeaders = new Headers(request.headers);
   targetHeaders.delete('host');
   targetHeaders.set('origin', targetUrl);
   targetHeaders.set('referer', targetUrl + url.pathname);
 
-  // 转发客户端 Cookie
+  // 转发客户端 Cookie（关键！）
   const clientCookies = request.headers.get('cookie');
   if (clientCookies) {
     targetHeaders.set('cookie', clientCookies);
@@ -81,6 +82,7 @@ async function processProxyResponse(response, originalRequest, url) {
   return new Response(response.body, { status: response.status, headers: newHeaders });
 }
 
+// ---------- 控制面板注入 ----------
 function injectControlPanel(html, url) {
   const panelCode = `
   <style>
@@ -281,16 +283,9 @@ function injectControlPanel(html, url) {
     async function getNewAccount() {
       updateStatus('正在获取新游客账户...', 'info');
       try {
-        // 生成简单指纹（可扩展）
-        const fp = { data: {}, hash: 'dummy' }; // 真实场景可收集更详细指纹
-        const response = await fetch('/_proxy/anonymous-sign-in', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(fp)
-        });
+        const response = await fetch('/_proxy/anonymous-sign-in', { method: 'POST' });
         if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
-        const result = await response.json();
-        // 如果后端返回了Set-Cookie头，浏览器会自动存储
+        // 浏览器会自动存储 Set-Cookie 中的 Cookie
         updateStatus('✅ 获取成功！请手动刷新页面', 'success');
         setTimeout(() => { if(confirm('需要刷新页面以应用新Cookie吗？')) location.reload(); }, 1000);
       } catch (e) {
@@ -349,7 +344,6 @@ function injectControlPanel(html, url) {
           body: JSON.stringify({ cookies })
         });
         if (!r.ok) throw new Error();
-        // 注入成功后，浏览器会收到Set-Cookie头自动存储
         updateStatus('✅ 注入成功，请手动刷新页面', 'success');
         setTimeout(() => updateCurrentCookies(), 500);
       } catch (e) {
@@ -394,11 +388,122 @@ function injectControlPanel(html, url) {
   return html.replace('</body>', panelCode + '</body>');
 }
 
-// 匿名注册代理
+// ---------- 真实匿名登录 ----------
 async function handleAnonymousSignIn(request, targetUrl) {
   try {
-    // 直接转发客户端的请求体到官网
-    const body = await request.text();
+    // 生成新用户ID
+    const userId = generateUUID();
+    const email = `${userId}@anon.com`;
+    const code = generateRandomBase64(120); // 生成一个随机 base64 字符串作为 code
+
+    // 从 HAR 文件中提取的默认指纹（可适当随机化）
+    const fp = {
+      "data": {
+        "audio": {
+          "sampleHash": 1169.1655874748158 + Math.random() * 10,
+          "oscillator": "sine",
+          "maxChannels": 1,
+          "channelCountMode": "max"
+        },
+        "canvas": { "commonImageDataHash": "8965585f0983dad03f7382c986d7aee5" },
+        "fonts": {
+          "Arial": 340.3125,
+          "Courier": 435.9375,
+          "Courier New": 435.9375,
+          "Helvetica": 340.3125,
+          "Tahoma": 340.3125,
+          "Verdana": 340.3125
+        },
+        "hardware": {
+          "videocard": {
+            "vendor": "WebKit",
+            "renderer": "WebKit WebGL",
+            "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+            "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"
+          },
+          "architecture": 127,
+          "deviceMemory": "4",
+          "jsHeapSizeLimit": 1130000000
+        },
+        "locales": { "languages": "zh-CN", "timezone": "Asia/Shanghai" },
+        "permissions": {
+          "accelerometer": "granted",
+          "background-fetch": "denied",
+          "background-sync": "denied",
+          "camera": "prompt",
+          "clipboard-read": "denied",
+          "clipboard-write": "granted",
+          "display-capture": "denied",
+          "gyroscope": "granted",
+          "geolocation": "prompt",
+          "magnetometer": "granted",
+          "microphone": "prompt",
+          "midi": "granted",
+          "nfc": "denied",
+          "notifications": "denied",
+          "payment-handler": "denied",
+          "persistent-storage": "denied",
+          "storage-access": "denied",
+          "window-management": "denied"
+        },
+        "plugins": { "plugins": [] },
+        "screen": {
+          "is_touchscreen": true,
+          "maxTouchPoints": 5,
+          "colorDepth": 24,
+          "mediaMatches": [
+            "prefers-contrast: no-preference",
+            "any-hover: none",
+            "any-pointer: coarse",
+            "pointer: coarse",
+            "hover: none",
+            "update: fast",
+            "prefers-reduced-motion: no-preference",
+            "prefers-reduced-transparency: no-preference",
+            "scripting: enabled",
+            "forced-colors: none"
+          ]
+        },
+        "system": {
+          "platform": "Linux aarch64",
+          "cookieEnabled": true,
+          "productSub": "20030107",
+          "product": "Gecko",
+          "useragent": "Mozilla/5.0 (Linux; Android 10; PBEM00 Build/QKQ1.190918.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7681.2 Mobile Safari/537.36",
+          "hardwareConcurrency": 8,
+          "browser": { "name": "Chrome", "version": "147.0" },
+          "applePayVersion": 0
+        },
+        "webgl": { "commonImageHash": "1d62a570a8e39a3cc4458b2efd47b6a2" },
+        "math": {
+          "acos": 1.0471975511965979,
+          "asin": -9.614302481290016e-17,
+          "atan": 4.578239276804769e-17,
+          "cos": -4.854249971455313e-16,
+          "cosh": 1.9468519159297506,
+          "e": 2.718281828459045,
+          "largeCos": 0.7639704044417283,
+          "largeSin": -0.6452512852657808,
+          "largeTan": -0.8446024630198843,
+          "log": 6.907755278982137,
+          "pi": 3.141592653589793,
+          "sin": -1.9461946644816207e-16,
+          "sinh": -0.6288121810679035,
+          "sqrt": 1.4142135623730951,
+          "tan": 6.980860926542689e-14,
+          "tanh": -0.39008295789884684
+        }
+      },
+      "hash": "77f81202fa12f86b7f77af693c55bf08"
+    };
+
+    const body = {
+      code: code,
+      id: userId,
+      email: email,
+      fp: fp
+    };
+
     const response = await fetch(targetUrl + '/api/auth/anonymous-sign-in', {
       method: 'POST',
       headers: {
@@ -407,24 +512,27 @@ async function handleAnonymousSignIn(request, targetUrl) {
         'Origin': targetUrl,
         'Referer': targetUrl
       },
-      body: body
+      body: JSON.stringify(body)
     });
+
     const responseBody = await response.text();
     const newHeaders = new Headers({
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Credentials': 'true',
       'Content-Type': response.headers.get('Content-Type') || 'application/json'
     });
+
     // 转发 Set-Cookie
     const setCookie = response.headers.get('set-cookie');
     if (setCookie) newHeaders.set('Set-Cookie', setCookie);
+
     return new Response(responseBody, { status: response.status, headers: newHeaders });
   } catch (error) {
     return new Response(JSON.stringify({ success: false, message: error.message }), { status: 500 });
   }
 }
 
-// 查询余额
+// ---------- 余额查询 ----------
 async function handleBalance(request, targetUrl) {
   try {
     const cookie = request.headers.get('cookie') || '';
@@ -445,7 +553,7 @@ async function handleBalance(request, targetUrl) {
   }
 }
 
-// 清除Cookie
+// ---------- 清除 Cookie ----------
 async function handleClearCookies(request) {
   const cookiesToClear = ['sb-rls-auth-token', '_rid', 'ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog', 'chosen_language', 'invite_code'];
   const setCookie = cookiesToClear.map(name => `${name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; HttpOnly; SameSite=None`).join(', ');
@@ -454,12 +562,11 @@ async function handleClearCookies(request) {
   });
 }
 
-// 注入Cookie
+// ---------- 注入 Cookie ----------
 async function handleInjectCookie(request) {
   try {
     const { cookies } = await request.json();
-    if (!cookies || typeof cookies !== 'object') throw new Error('Invalid cookie object');
-    // 构建Set-Cookie头，Domain设置为当前代理域名（浏览器会自动处理）
+    if (!cookies || typeof cookies !== 'object') throw new Error('无效的Cookie数据');
     const setCookie = Object.entries(cookies).map(([name, value]) =>
       `${name}=${encodeURIComponent(value)}; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=31536000`
     ).join(', ');
@@ -469,4 +576,22 @@ async function handleInjectCookie(request) {
   } catch (error) {
     return new Response(JSON.stringify({ success: false, message: error.message }), { status: 400 });
   }
+}
+
+// ---------- 工具函数 ----------
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+function generateRandomBase64(length) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
 }
