@@ -1,5 +1,5 @@
-// Cloudflare Worker代码 - 酒馆AI无限制代理（最终修复版）
-// jg.ilqx.dpdns.org -> https://www.xn--i8s951di30azba.com
+// Cloudflare Worker 完整代码 - 酒馆AI无限制代理
+// 绑定域名：jg.ilqx.dpdns.org -> https://www.xn--i8s951di30azba.com
 
 export default {
   async fetch(request, env, ctx) {
@@ -32,7 +32,7 @@ export default {
   }
 };
 
-// 处理代理请求
+// ---------- 代理请求处理 ----------
 async function handleProxyRequest(request, targetUrl, url) {
   const targetHeaders = new Headers(request.headers);
   targetHeaders.delete('host');
@@ -52,7 +52,6 @@ async function handleProxyRequest(request, targetUrl, url) {
   return await processProxyResponse(response, request, url);
 }
 
-// 处理代理响应
 async function processProxyResponse(response, originalRequest, url) {
   const contentType = response.headers.get('content-type') || '';
   const clonedResponse = response.clone();
@@ -89,9 +88,9 @@ async function processProxyResponse(response, originalRequest, url) {
   });
 }
 
-// 注入控制面板（可折叠、移动端适配、高级功能）
+// ---------- 控制面板注入 ----------
 function injectControlPanel(html, url) {
-  const controlPanelScript = `
+  const panelHTML = `
   <style>
     #jg-proxy-panel-container {
       position: fixed;
@@ -475,24 +474,24 @@ function injectControlPanel(html, url) {
   })();
   </script>
   `;
-  return html.replace('</body>', controlPanelScript + '</body>');
+  return html.replace('</body>', panelHTML + '</body>');
 }
 
-// ---------- 核心修改：调用真实匿名登录 API ----------
+// ---------- 获取新游客账户 ----------
 async function handleGetAccount(request, targetUrl) {
   try {
-    // 解析客户端传入的 Cookie，提取 ph_phc_...（如果有）
+    // 从客户端请求中获取 Cookie，提取 ph_phc_... (用户指纹)
     const clientCookies = parseCookies(request.headers.get('cookie') || '');
     const phCookie = clientCookies['ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog'];
 
-    // 生成随机 user-id 和 email
+    // 生成随机用户 ID 和邮箱
     const userId = generateUUID();
     const email = `${userId}@anon.com`;
 
-    // 生成一个类似浏览器中的 code（Base64 编码的 userId + 时间戳）
-    const code = btoa(userId + ':' + Date.now());
+    // 从HAR文件中提取的固定 code（可能无效，仅作尝试）
+    const fixedCode = "VUZraitCbnJSZTZBZmJvTEhoY2YrTmt3eWpVamljVGYzY1JIbEEzOEhFRDBUWjk0U2pWYllsSGxhL3EyczVDNndONDMzd3g3K09PaHd5RTcxdmdlRVhoY1BVTEZvUkVvaG5IUUt3RWNJYlhaV0g3Y2VkNEM2YXpQbVlXNmt1VTZ5SEMrOUdvdA==";
 
-    // 构建指纹对象（与 HAR 文件中的成功请求一致）
+    // 构建指纹对象 (与HAR文件一致)
     const fp = {
       data: {
         audio: { sampleHash: 1169.1655874748158, oscillator: "sine", maxChannels: 1, channelCountMode: "max" },
@@ -541,64 +540,71 @@ async function handleGetAccount(request, targetUrl) {
     };
 
     const requestBody = {
-      code: code,
+      code: fixedCode,
       id: userId,
       email: email,
       fp: fp
     };
 
-    // 生成随机的 x-dzmm-request-id（8位字母数字）
+    // 生成随机 x-dzmm-request-id
     const requestId = Math.random().toString(36).substring(2, 10);
 
-    // 构建请求头，模仿成功请求
+    // 构建请求头
     const headers = {
       'Content-Type': 'application/json',
-      'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36',
-      'Accept': 'application/json',
+      'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0 (Linux; Android 10; PBEM00 Build/QKQ1.190918.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7681.2 Mobile Safari/537.36',
+      'Accept': '*/*',
       'Origin': targetUrl,
       'Referer': targetUrl + '/',
       'x-dzmm-request-id': requestId,
       'sec-ch-ua': '"Not.A/Brand";v="8", "Chromium";v="147"',
       'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"'
+      'sec-ch-ua-platform': '"Windows"',
+      'x-requested-with': 'mark.via'
     };
 
-    // 如果有 ph_phc_... Cookie，添加到 Cookie 头中
     if (phCookie) {
       headers['Cookie'] = `ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog=${phCookie}`;
     }
 
-    // 调用真实匿名登录接口
+    // 调用匿名登录 API
     const response = await fetch(targetUrl + '/api/auth/anonymous-sign-in', {
       method: 'POST',
       headers: headers,
       body: JSON.stringify(requestBody)
     });
 
+    const responseText = await response.text();
+    console.log(`API Response Status: ${response.status}, Body: ${responseText}`);
+
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API返回 ${response.status}: ${errorText}`);
+      throw new Error(`API返回 ${response.status}: ${responseText}`);
+    }
+
+    // 解析响应体
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (e) {
+      throw new Error('API返回的不是有效JSON');
     }
 
     // 从响应头中提取 Set-Cookie
     const setCookieHeader = response.headers.get('set-cookie');
     const cookies = parseSetCookies(setCookieHeader);
 
-    // 确保必要的 cookie 存在（如果 API 没返回全，可以补充）
+    // 补充可能缺失的 cookie
     if (!cookies['_rid']) cookies['_rid'] = userId;
     if (!cookies['chosen_language']) cookies['chosen_language'] = 'zh-CN';
     if (!cookies['invite_code']) cookies['invite_code'] = '-';
-
-    // 可选：从响应体中提取更多信息（如用户 ID）
-    const data = await response.json();
 
     return new Response(JSON.stringify({
       success: true,
       message: '游客账户创建成功',
       cookies: cookies,
       userId: cookies['_rid'] || data.id,
-      balance: 35, // 新用户默认 35，后续可通过 /api/me 获取真实值
-      expiresAt: new Date(Date.now() + 3600*1000).toISOString(),
+      balance: 35,
+      expiresAt: new Date(Date.now() + 3600 * 1000).toISOString(),
       note: '通过真实API注册，拥有35次免费额度。'
     }), {
       status: 200,
@@ -611,6 +617,7 @@ async function handleGetAccount(request, targetUrl) {
     });
 
   } catch (error) {
+    console.error(`Error in handleGetAccount: ${error.message}`);
     return new Response(JSON.stringify({
       success: false,
       message: `创建账户失败: ${error.message}`
@@ -621,7 +628,7 @@ async function handleGetAccount(request, targetUrl) {
   }
 }
 
-// 检查状态并获取真实余额
+// ---------- 检查状态 ----------
 async function handleCheckStatus(request, targetUrl) {
   try {
     const clientCookies = parseCookies(request.headers.get('cookie') || '');
@@ -629,7 +636,6 @@ async function handleCheckStatus(request, targetUrl) {
     let balance = 0;
 
     if (hasAuth) {
-      // 带着客户端的 Cookie 去请求 /api/me 获取真实余额
       const meResponse = await fetch(targetUrl + '/api/me', {
         headers: {
           'Cookie': request.headers.get('cookie') || ''
@@ -658,7 +664,7 @@ async function handleCheckStatus(request, targetUrl) {
   }
 }
 
-// 清除Cookie
+// ---------- 清除 Cookie ----------
 async function handleClearCookies(request) {
   const cookiesToClear = [
     'sb-rls-auth-token', '_rid', 'ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog',
@@ -672,7 +678,7 @@ async function handleClearCookies(request) {
   });
 }
 
-// 注入自定义Cookie
+// ---------- 注入自定义 Cookie ----------
 async function handleInjectCookie(request) {
   try {
     const body = await request.json();
@@ -689,7 +695,7 @@ async function handleInjectCookie(request) {
   }
 }
 
-// 工具函数
+// ---------- 工具函数 ----------
 function parseCookies(cookieString) {
   const cookies = {};
   if (cookieString) {
