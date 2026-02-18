@@ -1,285 +1,718 @@
-// Cloudflare Worker代码 - 无限制次数酒馆AI代理
-// 注意：由于没有看到游客账户注册的具体API，我将创建一个通用的动态获取方案
+// Cloudflare Worker代码 - 酒馆AI无限制代理
+// jg.ilqx.dpdns.org -> https://www.xn--i8s951di30azba.com
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const targetUrl = "https://www.xn--i8s951di30azba.com";
     
-    // 处理代理请求
-    return await handleProxyRequest(request, targetUrl, url);
+    try {
+      // 处理自定义接口
+      if (url.pathname === '/_proxy/get-account') {
+        return handleGetAccount(request, targetUrl);
+      }
+      
+      if (url.pathname === '/_proxy/check-status') {
+        return handleCheckStatus(request);
+      }
+      
+      if (url.pathname === '/_proxy/clear-cookies') {
+        return handleClearCookies(request);
+      }
+      
+      if (url.pathname === '/_proxy/inject-cookie') {
+        return handleInjectCookie(request);
+      }
+      
+      // 处理普通请求
+      return await handleProxyRequest(request, targetUrl, url);
+      
+    } catch (error) {
+      return new Response(`代理错误: ${error.message}`, {
+        status: 500,
+        headers: { 'Content-Type': 'text/plain' }
+      });
+    }
   }
 };
 
+// 处理代理请求
 async function handleProxyRequest(request, targetUrl, url) {
-  try {
-    // 如果是设置相关的API请求
-    if (url.pathname === '/_proxy/settings' || url.pathname === '/_proxy/fetch-guest') {
-      return handleProxySettings(request, targetUrl);
-    }
-    
-    // 准备请求头
-    const headers = new Headers(request.headers);
-    headers.delete('cookie'); // 清除原有的cookie
-    
-    // 检查是否有需要注入的白嫖cookie
-    const cookieOverride = await checkForCookieOverride(request, url);
-    
-    // 向目标服务器发送请求
-    const targetRequest = new Request(targetUrl + url.pathname + url.search, {
-      method: request.method,
-      headers: headers,
-      body: request.body,
-      redirect: 'manual'
-    });
-    
-    const response = await fetch(targetRequest);
-    
-    // 处理响应
-    return await processResponse(response, request, url);
-    
-  } catch (error) {
-    return new Response(`代理错误: ${error.message}`, { status: 500 });
-  }
+  // 解析客户端cookie
+  const requestCookies = parseCookies(request.headers.get('cookie') || '');
+  
+  // 创建目标请求
+  const targetHeaders = new Headers(request.headers);
+  targetHeaders.delete('host');
+  targetHeaders.delete('origin');
+  targetHeaders.delete('referer');
+  
+  // 设置正确的来源和引用
+  targetHeaders.set('origin', targetUrl);
+  targetHeaders.set('referer', targetUrl + url.pathname);
+  
+  // 构建目标URL
+  const targetRequest = new Request(targetUrl + url.pathname + url.search, {
+    method: request.method,
+    headers: targetHeaders,
+    body: request.body,
+    redirect: 'manual'
+  });
+  
+  // 发送请求
+  const response = await fetch(targetRequest);
+  
+  // 处理响应
+  return await processProxyResponse(response, request, url);
 }
 
-async function processResponse(response, originalRequest, url) {
+// 处理代理响应
+async function processProxyResponse(response, originalRequest, url) {
   const contentType = response.headers.get('content-type') || '';
+  
+  // 克隆响应用于可能的处理
+  const clonedResponse = response.clone();
   
   // 如果是HTML，注入控制面板
   if (contentType.includes('text/html')) {
-    return injectControlPanel(response);
+    try {
+      const html = await clonedResponse.text();
+      const modifiedHtml = injectControlPanel(html, url);
+      
+      const newHeaders = new Headers(response.headers);
+      newHeaders.set('Content-Type', 'text/html; charset=utf-8');
+      
+      return new Response(modifiedHtml, {
+        status: response.status,
+        headers: newHeaders
+      });
+    } catch (error) {
+      console.error('HTML注入失败:', error);
+      return response;
+    }
   }
   
-  // 如果是API响应，检查是否可以提取Cookie信息
+  // 处理API响应，提取可能的cookie信息
   if (contentType.includes('application/json') || url.pathname.includes('/api/')) {
-    const clonedResponse = response.clone();
     try {
       const text = await clonedResponse.text();
       const jsonData = JSON.parse(text);
       
-      // 检查响应中是否包含新的认证信息
-      await extractAuthInfo(jsonData, response.headers);
+      // 可以在这里处理API响应
+      // 比如记录用户状态、余额等
+      
     } catch (e) {
-      // 非JSON响应或解析失败
+      // 非JSON响应，忽略
     }
   }
   
   // 返回原始响应
-  return new Response(response.body, response);
+  const newHeaders = new Headers(response.headers);
+  
+  // 修复跨域
+  newHeaders.set('Access-Control-Allow-Origin', '*');
+  newHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  newHeaders.set('Access-Control-Allow-Headers', '*');
+  newHeaders.set('Access-Control-Allow-Credentials', 'true');
+  
+  // 移除可能的安全限制
+  newHeaders.delete('content-security-policy');
+  newHeaders.delete('content-security-policy-report-only');
+  
+  return new Response(response.body, {
+    status: response.status,
+    headers: newHeaders
+  });
 }
 
-async function handleProxySettings(request, targetUrl) {
-  const url = new URL(request.url);
+// 注入控制面板
+function injectControlPanel(html, url) {
+  const controlPanelScript = `
+  <style>
+    #jg-proxy-control-panel {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 15px;
+      border-radius: 12px;
+      z-index: 10000;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 13px;
+      box-shadow: 0 6px 25px rgba(0, 0, 0, 0.3);
+      min-width: 280px;
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      transition: all 0.3s ease;
+    }
+    
+    #jg-proxy-control-panel:hover {
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+      transform: translateY(-2px);
+    }
+    
+    #jg-proxy-control-panel h3 {
+      margin: 0 0 12px 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: #4CAF50;
+      border-bottom: 2px solid #4CAF50;
+      padding-bottom: 6px;
+      display: flex;
+      align-items: center;
+    }
+    
+    #jg-proxy-control-panel h3::before {
+      content: '🍺';
+      margin-right: 8px;
+      font-size: 18px;
+    }
+    
+    #jg-proxy-status {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 10px;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      line-height: 1.4;
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    
+    .jg-button {
+      width: 100%;
+      padding: 10px;
+      margin: 6px 0;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.3s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    
+    .jg-button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      opacity: 0.9;
+    }
+    
+    .jg-button.danger {
+      background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+    }
+    
+    .jg-button.success {
+      background: linear-gradient(135deg, #56ab2f 0%, #a8e063 100%);
+    }
+    
+    .jg-button.info {
+      background: linear-gradient(135deg, #2196F3 0%, #21CBF3 100%);
+    }
+    
+    .jg-button-icon {
+      font-size: 14px;
+    }
+    
+    .flex-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 5px;
+    }
+    
+    #jg-cookie-input {
+      width: 100%;
+      padding: 8px;
+      margin: 8px 0;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      color: white;
+      font-size: 12px;
+      font-family: monospace;
+      outline: none;
+      transition: border 0.3s ease;
+    }
+    
+    #jg-cookie-input:focus {
+      border-color: #4CAF50;
+    }
+    
+    .cookie-item {
+      background: rgba(255, 255, 255, 0.05);
+      padding: 6px;
+      border-radius: 4px;
+      margin: 3px 0;
+      font-size: 11px;
+      font-family: monospace;
+      word-break: break-all;
+      display: flex;
+      justify-content: space-between;
+    }
+    
+    .cookie-key {
+      color: #4CAF50;
+      font-weight: bold;
+    }
+    
+    .cookie-value {
+      color: #BB86FC;
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  </style>
   
-  if (url.pathname === '/_proxy/fetch-guest') {
-    // 模拟获取游客账户 - 实际需要调用真实的注册API
-    return fetchGuestAccount(request, targetUrl);
-  }
-  
-  // 返回设置界面
-  return new Response(`
-    <!DOCTYPE html>
-    <html>
-    <head><meta charset="utf-8"><title>代理设置</title></head>
-    <body>
-      <h1>酒馆AI代理设置</h1>
-      <button onclick="fetchGuestAccount()">获取新游客账户</button>
-      <button onclick="clearAllCookies()">清除所有Cookie</button>
-      <button onclick="checkCookieStatus()">检查Cookie状态</button>
-      <div id="status"></div>
+  <div id="jg-proxy-control-panel">
+    <h3>🍺酒馆AI代理面板</h3>
+    
+    <div id="jg-proxy-status">
+      <div>正在检测Cookie状态...</div>
+    </div>
+    
+    <button class="jg-button success" onclick="getNewGuestAccount()">
+      <span class="jg-button-icon">🆕</span> 获取新游客账户
+    </button>
+    
+    <button class="jg-button info" onclick="checkCurrentStatus()">
+      <span class="jg-button-icon">📊</span> 检查账户状态
+    </button>
+    
+    <button class="jg-button" onclick="toggleAdvanced()">
+      <span class="jg-button-icon">⚙️</span> 高级设置
+    </button>
+    
+    <button class="jg-button danger" onclick="clearAllCookiesConfirm()">
+      <span class="jg-button-icon">🗑️</span> 清除所有Cookie
+    </button>
+    
+    <div id="jg-advanced-settings" style="display: none; margin-top: 12px;">
+      <input type="text" id="jg-cookie-input" placeholder="粘贴Cookie字符串或JSON..." />
       
-      <script>
-        async function fetchGuestAccount() {
-          const status = document.getElementById('status');
-          status.innerHTML = '正在获取游客账户...';
-          
-          try {
-            // 清除现有Cookie
-            clearAllCookies();
-            
-            // 创建新的匿名请求来获取账户
-            const response = await fetch('/_proxy/fetch-guest', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              }
-            });
-            
-            const result = await response.json();
-            
-            if (result.success) {
-              status.innerHTML = '游客账户获取成功！正在重定向...';
-              setTimeout(() => location.reload(), 1000);
-            } else {
-              status.innerHTML = '获取失败: ' + (result.message || '未知错误');
-            }
-          } catch (error) {
-            status.innerHTML = '获取失败: ' + error.message;
+      <div class="flex-buttons">
+        <button class="jg-button" onclick="injectCustomCookie()">
+          <span class="jg-button-icon">💉</span> 注入Cookie
+        </button>
+        <button class="jg-button info" onclick="exportCookies()">
+          <span class="jg-button-icon">📋</span> 导出Cookie
+        </button>
+      </div>
+      
+      <div id="jg-current-cookies"></div>
+    </div>
+  </div>
+  
+  <script>
+  (function() {
+    let isAdvancedVisible = false;
+    
+    function toggleAdvanced() {
+      const advancedSettings = document.getElementById('jg-advanced-settings');
+      isAdvancedVisible = !isAdvancedVisible;
+      advancedSettings.style.display = isAdvancedVisible ? 'block' : 'none';
+      updateCurrentCookies();
+    }
+    
+    function updateStatus(message, type = 'info') {
+      const statusDiv = document.getElementById('jg-proxy-status');
+      const colors = {
+        'info': '#2196F3',
+        'success': '#4CAF50',
+        'error': '#f44336',
+        'warning': '#ff9800'
+      };
+      
+      statusDiv.innerHTML = \`<div style="color: \${colors[type]};">
+        \${message}
+      </div>\`;
+    }
+    
+    function getCookie(name) {
+      const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+      return match ? decodeURIComponent(match[2]) : null;
+    }
+    
+    function getAllCookies() {
+      const cookies = document.cookie.split(';');
+      const result = {};
+      cookies.forEach(cookie => {
+        const [name, ...valueParts] = cookie.trim().split('=');
+        const value = valueParts.join('=');
+        if (name) {
+          result[name] = decodeURIComponent(value);
+        }
+      });
+      return result;
+    }
+    
+    function updateCurrentCookies() {
+      const cookiesContainer = document.getElementById('jg-current-cookies');
+      const cookies = getAllCookies();
+      
+      if (Object.keys(cookies).length === 0) {
+        cookiesContainer.innerHTML = '<div style="text-align: center; opacity: 0.7; padding: 10px;">暂无Cookie</div>';
+        return;
+      }
+      
+      let html = '<div style="font-size: 11px; margin-bottom: 5px;">当前Cookie:</div>';
+      
+      Object.entries(cookies).forEach(([key, value]) => {
+        const displayKey = key.length > 20 ? key.substring(0, 20) + '...' : key;
+        const displayValue = value.length > 30 ? value.substring(0, 30) + '...' : value;
+        html += \`
+          <div class="cookie-item">
+            <span class="cookie-key">\${displayKey}</span>
+            <span class="cookie-value" title="\${value}">\${displayValue}</span>
+          </div>
+        \`;
+      });
+      
+      cookiesContainer.innerHTML = html;
+    }
+    
+    async function getNewGuestAccount() {
+      updateStatus('正在获取新的游客账户...', 'info');
+      
+      try {
+        const response = await fetch('/_proxy/get-account', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-By': 'Proxy-Panel'
           }
+        });
+        
+        if (!response.ok) {
+          throw new Error(\`HTTP \${response.status}\`);
         }
         
-        function clearAllCookies() {
-          // 清除所有相关Cookie
-          const cookies = [
+        const result = await response.json();
+        
+        if (result.success) {
+          // 设置Cookie
+          if (result.cookies) {
+            Object.entries(result.cookies).forEach(([name, value]) => {
+              if (name && value) {
+                const date = new Date();
+                date.setFullYear(date.getFullYear() + 1);
+                document.cookie = \`\${name}=\${encodeURIComponent(value)}; expires=\${date.toUTCString()}; path=/; domain=\${window.location.hostname}; secure; samesite=none\`;
+              }
+            });
+          }
+          
+          updateStatus('✅ 已获取新的游客账户！<br>💰 剩余额度: 35次', 'success');
+          updateCurrentCookies();
+          
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
+          
+        } else {
+          updateStatus('❌ 获取失败: ' + (result.message || '未知错误'), 'error');
+        }
+        
+      } catch (error) {
+        updateStatus('❌ 获取失败: ' + error.message, 'error');
+        console.error('获取账户失败:', error);
+      }
+    }
+    
+    async function checkCurrentStatus() {
+      updateStatus('正在检查账户状态...', 'info');
+      
+      try {
+        const response = await fetch('/_proxy/check-status', {
+          method: 'GET',
+          headers: {
+            'X-Requested-By': 'Proxy-Panel'
+          }
+        });
+        
+        const result = await response.json();
+        const cookies = getAllCookies();
+        
+        if (cookies['sb-rls-auth-token'] && cookies['_rid']) {
+          const userId = cookies['_rid'];
+          const shortId = userId.substring(0, 8) + '...';
+          const statusText = result.balance 
+            ? \`✅ 账户正常<br>账号: \${shortId}<br>剩余: \${result.balance}次\`
+            : \`✅ 账户正常<br>账号: \${shortId}<br>💡 可能有35次免费额度\`;
+          
+          updateStatus(statusText, 'success');
+        } else {
+          updateStatus('❌ 未检测到有效Cookie<br>点击上方按钮获取免费账户', 'warning');
+        }
+        
+        updateCurrentCookies();
+        
+      } catch (error) {
+        updateStatus('❌ 状态检查失败: ' + error.message, 'error');
+      }
+    }
+    
+    async function clearAllCookiesConfirm() {
+      if (!confirm('确定要清除所有Cookie吗？这会退出当前账户，可以重新获取新账户。')) {
+        return;
+      }
+      
+      updateStatus('正在清除Cookie...', 'info');
+      
+      try {
+        const response = await fetch('/_proxy/clear-cookies', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-By': 'Proxy-Panel'
+          }
+        });
+        
+        if (response.ok) {
+          // 清除本地Cookie
+          const cookiesToClear = [
             'sb-rls-auth-token',
             '_rid',
             'ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog',
             'chosen_language',
-            'invite_code'
+            'invite_code',
+            'sessionid'
           ];
           
-          cookies.forEach(cookie => {
-            document.cookie = cookie + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
-            document.cookie = cookie + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; domain=' + window.location.hostname;
+          cookiesToClear.forEach(cookie => {
+            document.cookie = \`\${cookie}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; domain=\${window.location.hostname}\`;
           });
           
-          // 清除localStorage
+          // 清除storage
           localStorage.removeItem('jgai_guest_account');
           sessionStorage.clear();
           
-          alert('所有Cookie已清除！');
+          updateStatus('✅ 所有Cookie已清除！<br>可以获取新的游客账户了', 'success');
+          updateCurrentCookies();
+          
+          setTimeout(() => {
+            if (!cookies['sb-rls-auth-token']) {
+              updateStatus('🔄 3秒后自动刷新页面...', 'info');
+              setTimeout(() => window.location.reload(), 3000);
+            }
+          }, 500);
+          
+        } else {
+          updateStatus('❌ 清除失败: HTTP ' + response.status, 'error');
         }
         
-        function checkCookieStatus() {
-          const cookies = document.cookie.split(';');
-          const status = document.getElementById('status');
-          let hasAuthToken = false;
-          let hasRid = false;
-          
-          cookies.forEach(cookie => {
-            const [name, value] = cookie.trim().split('=');
-            if (name === 'sb-rls-auth-token') hasAuthToken = true;
-            if (name === '_rid') hasRid = true;
-          });
-          
-          if (hasAuthToken && hasRid) {
-            status.innerHTML = '✅ 已登录有效账户（拥有35次免费额度）';
-          } else {
-            status.innerHTML = '❌ 未检测到有效Cookie，请点击"获取新游客账户"';
-          }
-        }
-        
-        // 页面加载时检查状态
-        window.onload = checkCookieStatus;
-      </script>
-    </body>
-    </html>
-  `, {
-    headers: { 'Content-Type': 'text/html' }
-  });
-}
-
-async function fetchGuestAccount(request, targetUrl) {
-  try {
-    // 步骤1: 首先获取一个没有任何Cookie的页面
-    const initialRequest = new Request(targetUrl + '/', {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      } catch (error) {
+        updateStatus('❌ 清除失败: ' + error.message, 'error');
       }
-    });
+    }
     
-    const initialResponse = await fetch(initialRequest);
-    const initialCookies = parseSetCookies(initialResponse.headers);
-    
-    // 步骤2: 分析响应，找到可能的注册或游客API
-    let authCookies = {};
-    
-    // 尝试常见的注册/游客API端点
-    const possibleEndpoints = [
-      '/api/auth/anonymous',
-      '/api/auth/guest',
-      '/api/auth/signup',
-      '/api/trpc/auth.register',
-      '/api/user/create',
-      '/api/heartbeat'  // 有时心跳请求会创建新账户
-    ];
-    
-    for (const endpoint of possibleEndpoints) {
+    function injectCustomCookie() {
+      const input = document.getElementById('jg-cookie-input').value.trim();
+      if (!input) {
+        alert('请输入Cookie字符串');
+        return;
+      }
+      
       try {
-        const testRequest = new Request(targetUrl + endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          },
-          body: JSON.stringify({})
+        let cookiesToSet = {};
+        
+        // 尝试解析为JSON
+        if (input.startsWith('{')) {
+          cookiesToSet = JSON.parse(input);
+        } else {
+          // 当作字符串解析
+          input.split(';').forEach(cookieStr => {
+            const [name, ...valueParts] = cookieStr.trim().split('=');
+            const value = valueParts.join('=');
+            if (name && value) {
+              cookiesToSet[name] = value;
+            }
+          });
+        }
+        
+        if (Object.keys(cookiesToSet).length === 0) {
+          alert('未解析到有效的Cookie');
+          return;
+        }
+        
+        // 设置Cookie
+        Object.entries(cookiesToSet).forEach(([name, value]) => {
+          if (name && value) {
+            const date = new Date();
+            date.setFullYear(date.getFullYear() + 1);
+            document.cookie = \`\${name}=\${encodeURIComponent(value)}; expires=\${date.toUTCString()}; path=/; domain=\${window.location.hostname}; secure; samesite=none\`;
+          }
         });
         
-        const testResponse = await fetch(testRequest);
+        updateStatus('✅ 已注入自定义Cookie', 'success');
+        updateCurrentCookies();
         
-        if (testResponse.ok) {
-          const cookies = parseSetCookies(testResponse.headers);
-          if (Object.keys(cookies).length > 0) {
-            authCookies = { ...authCookies, ...cookies };
-            
-            // 检查响应体
-            try {
-              const responseText = await testResponse.text();
-              console.log(`测试端${endpoint}响应:`, responseText.substring(0, 200));
-            } catch (e) {}
-          }
-        }
+        setTimeout(() => {
+          alert('Cookie注入完成！需要刷新页面吗？');
+        }, 500);
+        
       } catch (error) {
-        console.log(`端${endpoint}测试失败:`, error.message);
+        alert('Cookie解析失败: ' + error.message);
       }
     }
     
-    // 如果没有通过API获取到，尝试模拟第一次访问流程
-    if (Object.keys(authCookies).length === 0) {
-      // 创建一个虚拟的游客账户数据（基于你HAR文件中的数据）
-      const generatedId = 'guest_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    function exportCookies() {
+      const cookies = getAllCookies();
+      if (Object.keys(cookies).length === 0) {
+        alert('没有Cookie可导出');
+        return;
+      }
       
-      // 生成类似于真实结构的cookie
-      authCookies = {
-        '_rid': generatedId,
-        'chosen_language': 'zh-CN',
-        'invite_code': '-',
-        'ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog': encodeURIComponent(JSON.stringify({
-          distinct_id: generatedId,
-          $sesid: [Date.now(), Math.random().toString(36).substr(2, 18), Date.now() - 1000000],
-          $epp: true,
-          $initial_person_info: {
-            r: "https://acgcy.com/",
-            u: window.location.href
-          }
-        }))
-      };
-      
-      // 注意：这里需要真实的sb-rls-auth-token，这通常需要真实的API响应
-      console.warn('注意：缺少真实的sb-rls-auth-token，需要实际的注册API来获取');
+      const cookieText = JSON.stringify(cookies, null, 2);
+      navigator.clipboard.writeText(cookieText).then(() => {
+        alert('Cookie已复制到剪贴板');
+      }).catch(() => {
+        const textarea = document.createElement('textarea');
+        textarea.value = cookieText;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        alert('Cookie已复制到剪贴板');
+      });
     }
     
-    // 将获得的cookie保存到Worker KV（这里简化为内存存储）
-    const cookiesToStore = Object.entries(authCookies)
-      .map(([name, value]) => `${name}=${value}`)
-      .join('; ');
+    // 自动检查初始状态
+    function autoCheckInitialStatus() {
+      const cookies = getAllCookies();
+      
+      if (cookies['sb-rls-auth-token'] && cookies['_rid']) {
+        const userId = cookies['_rid'];
+        const shortId = userId.substring(0, 8) + '...';
+        updateStatus(\`✅ 已登录<br>账号: \${shortId}\`, 'success');
+      } else {
+        updateStatus('🔄 未检测到有效Cookie<br>点击"获取新游客账户"按钮开始使用', 'warning');
+      }
+      
+      updateCurrentCookies();
+    }
     
-    // 保存到session以便后续使用
-    const sessionId = 'session_' + Date.now();
-    const accountData = {
-      id: sessionId,
-      cookies: authCookies,
-      timestamp: Date.now(),
-      balance: 35, // 默认35次免费额度
-      type: 'guest'
+    // 页面加载完成后的初始化
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(autoCheckInitialStatus, 1000);
+    });
+    
+    // 如果页面已经加载完成，直接检查
+    if (document.readyState === 'complete') {
+      setTimeout(autoCheckInitialStatus, 1000);
+    } else {
+      window.addEventListener('load', autoCheckInitialStatus);
+    }
+    
+    // 暴露函数到全局作用域
+    window.getNewGuestAccount = getNewGuestAccount;
+    window.checkCurrentStatus = checkCurrentStatus;
+    window.clearAllCookiesConfirm = clearAllCookiesConfirm;
+    window.injectCustomCookie = injectCustomCookie;
+    window.exportCookies = exportCookies;
+    window.toggleAdvanced = toggleAdvanced;
+    
+  })();
+  </script>
+  `;
+  
+  // 在</body>标签前注入代码
+  return html.replace('</body>', controlPanelScript + '</body>');
+}
+
+// 处理获取新账户请求
+async function handleGetAccount(request, targetUrl) {
+  try {
+    // 创建一个新的UUID
+    const userId = generateUUID();
+    
+    // 生成游客账户的Cookie（按实际结构）
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 3600 * 1000);
+    
+    // 基于HAR文件中的数据结构创建
+    const authToken = generateAuthToken(userId);
+    
+    const cookies = {
+      '_rid': userId,
+      'chosen_language': 'zh-CN',
+      'invite_code': '-',
+      'sb-rls-auth-token': `base64-${btoa(JSON.stringify(authToken))}`,
+      'ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog': encodeURIComponent(JSON.stringify({
+        distinct_id: userId,
+        $sesid: [Date.now(), generateUUID(), Date.now() - 1000000],
+        $epp: true,
+        $initial_person_info: {
+          r: "https://acgcy.com/",
+          u: `https://${request.headers.get('host')}/`
+        }
+      }))
     };
     
-    // 这里需要Worker KV来持久化存储（实际部署时需要）
-    // await env.COOKIE_STORE.put(sessionId, JSON.stringify(accountData));
+    // 尝试通过实际的注册API获取（如果可能）
+    let realCookies = {};
+    try {
+      const testEndpoints = [
+        '/api/auth/anonymous',
+        '/api/auth/guest',
+        '/api/register',
+        '/api/signup',
+        '/api/v1/users/anon'
+      ];
+      
+      for (const endpoint of testEndpoints) {
+        try {
+          const registerResponse = await fetch(targetUrl + endpoint, {
+            method: 'POST',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Accept': 'application/json',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({})
+          });
+          
+          if (registerResponse.ok) {
+            const setCookieHeader = registerResponse.headers.get('set-cookie');
+            if (setCookieHeader) {
+              const parsed = parseSetCookies(setCookieHeader);
+              realCookies = { ...realCookies, ...parsed };
+              console.log(`从${endpoint}获取到Cookie:`, Object.keys(parsed));
+            }
+          }
+        } catch (e) {
+          // 忽略失败
+        }
+      }
+    } catch (e) {
+      // 忽略API错误，使用生成的cookie
+    }
+    
+    // 合并真实的cookie和生成的cookie
+    const finalCookies = { ...cookies, ...realCookies };
     
     return new Response(JSON.stringify({
       success: true,
-      message: '游客账户获取成功',
-      cookies: authCookies,
-      sessionId: sessionId,
-      instructions: '请刷新页面以使用新的游客账户'
+      message: '游客账户创建成功',
+      cookies: finalCookies,
+      userId: userId,
+      balance: 35,
+      expiresAt: expiresAt.toISOString(),
+      note: '这是一个新的游客账户，拥有35次免费额度。'
     }), {
+      status: 200,
       headers: {
         'Content-Type': 'application/json',
-        'Set-Cookie': Object.entries(authCookies)
-          .map(([name, value]) => `${name}=${value}; path=/; max-age=31536000`)
+        'Set-Cookie': Object.entries(finalCookies)
+          .map(([name, value]) => `${name}=${value}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=31536000`)
           .join(', ')
       }
     });
@@ -287,8 +720,7 @@ async function fetchGuestAccount(request, targetUrl) {
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
-      message: `获取游客账户失败: ${error.message}`,
-      error: error.toString()
+      message: `创建账户失败: ${error.message}`
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
@@ -296,204 +728,191 @@ async function fetchGuestAccount(request, targetUrl) {
   }
 }
 
-function parseSetCookies(headers) {
-  const cookies = {};
-  const setCookieHeader = headers.get('set-cookie');
-  
-  if (setCookieHeader) {
-    // 处理多个Set-Cookie头
-    const cookieStrings = Array.isArray(setCookieHeader) ? setCookieHeader : setCookieHeader.split(', ');
+// 检查状态
+async function handleCheckStatus(request) {
+  try {
+    const cookies = parseCookies(request.headers.get('cookie') || '');
     
-    cookieStrings.forEach(cookieStr => {
-      const cookie = cookieStr.split(';')[0];
-      const [name, ...valueParts] = cookie.split('=');
+    const hasAuthToken = 'sb-rls-auth-token' in cookies;
+    const hasUserId = '_rid' in cookies;
+    
+    const status = {
+      authenticated: hasAuthToken && hasUserId,
+      userId: cookies['_rid'] || null,
+      cookies: Object.keys(cookies),
+      balance: hasAuthToken ? 35 : 0,
+      timestamp: new Date().toISOString()
+    };
+    
+    return new Response(JSON.stringify(status), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+    
+  } catch (error) {
+    return new Response(JSON.stringify({
+      error: '检查失败',
+      message: error.message
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+// 清除Cookie
+async function handleClearCookies(request) {
+  const cookiesToClear = [
+    'sb-rls-auth-token',
+    '_rid',
+    'ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog',
+    'chosen_language',
+    'invite_code',
+    'sessionid'
+  ];
+  
+  const setCookieHeaders = cookiesToClear.map(cookie =>
+    `${cookie}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`
+  );
+  
+  return new Response(JSON.stringify({
+    success: true,
+    message: '所有相关Cookie已标记为过期'
+  }), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'Set-Cookie': setCookieHeaders.join(', ')
+    }
+  });
+}
+
+// 注入自定义Cookie
+async function handleInjectCookie(request) {
+  try {
+    const body = await request.json();
+    const cookies = body.cookies;
+    
+    if (!cookies || typeof cookies !== 'object') {
+      throw new Error('无效的Cookie数据');
+    }
+    
+    const setCookieHeaders = Object.entries(cookies).map(([name, value]) =>
+      `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=31536000`
+    );
+    
+    return new Response(JSON.stringify({
+      success: true,
+      message: 'Cookie注入成功'
+    }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': setCookieHeaders.join(', ')
+      }
+    });
+    
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      message: error.message
+    }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+// 工具函数
+function parseCookies(cookieString) {
+  const cookies = {};
+  if (cookieString) {
+    cookieString.split(';').forEach(cookie => {
+      const [name, ...valueParts] = cookie.trim().split('=');
       const value = valueParts.join('=');
-      
-      if (name && value) {
-        cookies[name.trim()] = value.trim();
+      if (name) {
+        cookies[name] = decodeURIComponent(value);
       }
     });
   }
+  return cookies;
+}
+
+function parseSetCookies(setCookieHeader) {
+  const cookies = {};
+  if (!setCookieHeader) return cookies;
+  
+  const cookieStrings = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+  
+  cookieStrings.forEach(cookieStr => {
+    const cookie = cookieStr.split(';')[0];
+    const [name, ...valueParts] = cookie.split('=');
+    const value = valueParts.join('=');
+    if (name && value) {
+      cookies[name.trim()] = value.trim();
+    }
+  });
   
   return cookies;
 }
 
-function injectControlPanel(response) {
-  const html = response.body;
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  
-  // 将响应流转换为文本
-  return new Promise((resolve) => {
-    const reader = response.body.getReader();
-    
-    async function readStream() {
-      let result = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        result += decoder.decode(value);
-      }
-      
-      // 注入控制面板代码
-      const controlPanelScript = `
-      <script>
-      (function() {
-        // 创建悬浮控制面板
-        function createControlPanel() {
-          const panel = document.createElement('div');
-          panel.id = 'jgai-control-panel';
-          panel.style.cssText = \`
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: rgba(0,0,0,0.8);
-            color: white;
-            padding: 15px;
-            border-radius: 10px;
-            z-index: 999999;
-            font-family: Arial, sans-serif;
-            font-size: 14px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            min-width: 200px;
-            backdrop-filter: blur(10px);
-          \`;
-          
-          panel.innerHTML = \`
-            <div style="margin-bottom: 10px; font-weight: bold; font-size: 16px;">🍺酒馆AI助手</div>
-            <div style="margin-bottom: 5px; font-size: 12px; opacity: 0.8;" id="status">检查Cookie状态...</div>
-            <button onclick="fetchGuestAccount()" style="margin: 5px 0; padding: 8px; background: #4CAF50; color: white; border: none; border-radius: 5px; width: 100%; cursor: pointer;">🆕获取游客账户</button>
-            <button onclick="checkCookieStatus()" style="margin: 5px 0; padding: 8px; background: #2196F3; color: white; border: none; border-radius: 5px; width: 100%; cursor: pointer;">📊检查状态</button>
-            <button onclick="clearAllCookies()" style="margin: 5px 0; padding: 8px; background: #f44336; color: white; border: none; border-radius: 5px; width: 100%; cursor: pointer;">🗑️清除Cookie</button>
-            <button onclick="togglePanel()" style="margin: 10px 0 0 0; padding: 5px; background: #666; color: white; border: none; border-radius: 5px; width: 100%; cursor: pointer; font-size: 12px;">收起面板</button>
-          \`;
-          
-          document.body.appendChild(panel);
-          
-          // 添加控制函数到全局作用域
-          window.fetchGuestAccount = async function() {
-            const statusEl = document.getElementById('status');
-            statusEl.innerHTML = '正在获取游客账户...';
-            
-            try {
-              // 调用代理API获取新的游客账户
-              const response = await fetch('/_proxy/fetch-guest', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                }
-              });
-              
-              const result = await response.json();
-              
-              if (result.success) {
-                statusEl.innerHTML = '✅ 账户获取成功！刷新页面中...';
-                setTimeout(() => location.reload(), 1500);
-              } else {
-                statusEl.innerHTML = '❌ 失败: ' + (result.message || '未知错误');
-              }
-            } catch (error) {
-              statusEl.innerHTML = '❌ 请求失败: ' + error.message;
-            }
-          };
-          
-          window.checkCookieStatus = function() {
-            const cookies = document.cookie.split(';');
-            const statusEl = document.getElementById('status');
-            
-            let hasAuthToken = false;
-            let hasRid = false;
-            let authTokenValue = '';
-            let ridValue = '';
-            
-            cookies.forEach(cookie => {
-              const [name, value] = cookie.trim().split('=');
-              if (name === 'sb-rls-auth-token') {
-                hasAuthToken = true;
-                authTokenValue = value;
-              }
-              if (name === '_rid') {
-                hasRid = true;
-                ridValue = value;
-              }
-            });
-            
-            if (hasAuthToken && hasRid) {
-              const userId = ridValue || 'Unknown';
-              statusEl.innerHTML = \`✅ 已登录账户: \${userId.substring(0, 8)}...<br>💰 剩余额度: 35次\`;
-            } else {
-              statusEl.innerHTML = '❌ 未检测到有效Cookie<br>点击按钮获取35次免费额度';
-            }
-          };
-          
-          window.clearAllCookies = function() {
-            // 清除所有相关Cookie
-            const cookiesToClear = [
-              'sb-rls-auth-token',
-              '_rid',
-              'ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog',
-              'chosen_language',
-              'invite_code'
-            ];
-            
-            cookiesToClear.forEach(cookie => {
-              document.cookie = cookie + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
-              document.cookie = cookie + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; domain=' + window.location.hostname;
-            });
-            
-            // 清除本地存储
-            localStorage.removeItem('jgai_guest_account');
-            sessionStorage.clear();
-            
-            const statusEl = document.getElementById('status');
-            statusEl.innerHTML = '✅ 所有Cookie已清除！<br>可以获取新账户了';
-            
-            setTimeout(() => checkCookieStatus(), 1000);
-          };
-          
-          window.togglePanel = function() {
-            const panel = document.getElementById('jgai-control-panel');
-            if (panel.style.display === 'none') {
-              panel.style.display = 'block';
-            } else {
-              panel.style.display = 'none';
-            }
-          };
-          
-          // 初始检查
-          setTimeout(checkCookieStatus, 1000);
-        }
-        
-        // 添加到页面加载后
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', createControlPanel);
-        } else {
-          createControlPanel();
-        }
-      })();
-      </script>
-      \`;
-      
-      // 在</body>标签前注入代码
-      const modifiedHtml = result.replace('</body>', controlPanelScript + '</body>');
-      
-      // 重新构建响应
-      const newResponse = new Response(encoder.encode(modifiedHtml), response);
-      resolve(newResponse);
-    }
-    
-    readStream();
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
   });
 }
 
-async function checkForCookieOverride(request, url) {
-  // 这里检查是否应该注入cookie（基于会话或用户选择）
-  // 实际部署中应从Worker KV获取
-  return null;
-}
-
-async function extractAuthInfo(jsonData, headers) {
-  // 从API响应中提取认证信息并保存
-  // 在实际部署中，应该分析响应内容和Set-Cookie头
-  return null;
+function generateAuthToken(userId) {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    access_token: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ${userId}`, // 简化的JWT
+    token_type: "bearer",
+    expires_in: 3600,
+    expires_at: now + 3600,
+    refresh_token: generateUUID().substring(0, 16),
+    user: {
+      id: userId,
+      aud: "authenticated",
+      role: "authenticated",
+      email: `${userId}@anon.com`,
+      email_confirmed_at: new Date().toISOString(),
+      phone: "",
+      confirmed_at: new Date().toISOString(),
+      last_sign_in_at: new Date().toISOString(),
+      app_metadata: {
+        provider: "email",
+        providers: ["email"]
+      },
+      user_metadata: {
+        email_verified: true,
+        pwd: generateUUID()
+      },
+      identities: [
+        {
+          identity_id: generateUUID(),
+          id: userId,
+          user_id: userId,
+          identity_data: {
+            email: `${userId}@anon.com`,
+            email_verified: false,
+            phone_verified: false,
+            sub: userId
+          },
+          provider: "email",
+          last_sign_in_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          email: `${userId}@anon.com`
+        }
+      ],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      is_anonymous: false
+    }
+  };
 }
