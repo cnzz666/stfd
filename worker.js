@@ -1,428 +1,761 @@
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
-// worker.js - 完整版
-var worker_default = {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const targetUrl = "https://www.xn--i8s951di30azba.com";
+// ==================== D1 数据库初始化与操作 ====================
+async function initDatabase(env) {
+  try {
+    // 检查表是否存在，不存在则创建
+    const tableCheck = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='account_manage'"
+    ).first();
     
-    // 全局身份验证检查（所有路径）
-    if (!await authenticateRequest(request, env)) {
-      return new Response('需要身份验证', {
+    if (!tableCheck) {
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS account_manage (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL UNIQUE,
+          cookies TEXT NOT NULL,
+          token TEXT,
+          balance INTEGER DEFAULT 35,
+          create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          status TEXT DEFAULT 'active',
+          ip_address TEXT,
+          user_agent TEXT,
+          last_used TIMESTAMP
+        )
+      `).run();
+      
+      await env.DB.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_user_id ON account_manage(user_id)
+      `).run();
+      
+      console.log("D1 数据库表 'account_manage' 创建成功");
+    }
+  } catch (error) {
+    console.error("D1 数据库初始化失败:", error);
+  }
+}
+
+async function saveAccountToDB(env, accountData) {
+  try {
+    const { userId, cookies, token, balance = 35, ipAddress, userAgent } = accountData;
+    
+    const existing = await env.DB.prepare(
+      "SELECT id FROM account_manage WHERE user_id = ?"
+    ).bind(userId).first();
+    
+    if (existing) {
+      // 更新现有记录
+      await env.DB.prepare(`
+        UPDATE account_manage 
+        SET cookies = ?, token = ?, balance = ?, update_time = CURRENT_TIMESTAMP, 
+            last_used = CURRENT_TIMESTAMP, ip_address = ?, user_agent = ?
+        WHERE user_id = ?
+      `).bind(
+        JSON.stringify(cookies),
+        token || '',
+        balance,
+        ipAddress || '',
+        userAgent || '',
+        userId
+      ).run();
+      console.log(`帐号 ${userId} 已更新到数据库`);
+    } else {
+      // 插入新记录
+      await env.DB.prepare(`
+        INSERT INTO account_manage (user_id, cookies, token, balance, ip_address, user_agent)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(
+        userId,
+        JSON.stringify(cookies),
+        token || '',
+        balance,
+        ipAddress || '',
+        userAgent || ''
+      ).run();
+      console.log(`新帐号 ${userId} 已保存到数据库`);
+    }
+    
+    return { success: true };
+  } catch (error) {
+    console.error("保存帐号到数据库失败:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+async function getAccountsFromDB(env, limit = 100) {
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT * FROM account_manage ORDER BY update_time DESC LIMIT ?"
+    ).bind(limit).all();
+    
+    return { success: true, accounts: results || [] };
+  } catch (error) {
+    console.error("从数据库获取帐号失败:", error);
+    return { success: false, error: error.message, accounts: [] };
+  }
+}
+
+async function deleteAccountFromDB(env, userId) {
+  try {
+    await env.DB.prepare(
+      "DELETE FROM account_manage WHERE user_id = ?"
+    ).bind(userId).run();
+    
+    return { success: true };
+  } catch (error) {
+    console.error("从数据库删除帐号失败:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+// ==================== Cookie 操作增强 ====================
+const COOKIES_TO_CLEAR = [
+  "sb-rls-auth-token",
+  "_rid",
+  "ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog",
+  "chosen_language",
+  "invite_code",
+  "sessionid",
+  "_ga",
+  "_ga_WTNWK4GPZ6",
+  "_gid",
+  "__cf_bm",
+  "__cflb",
+  "__cfruid"
+];
+
+function parseCookies(cookieString) {
+  const cookies = {};
+  if (cookieString) {
+    cookieString.split(";").forEach((cookie) => {
+      const [name, ...valueParts] = cookie.trim().split("=");
+      const value = valueParts.join("=");
+      if (name) cookies[name] = decodeURIComponent(value);
+    });
+  }
+  return cookies;
+}
+__name(parseCookies, "parseCookies");
+
+function parseSetCookies(setCookieHeader) {
+  const cookies = {};
+  if (!setCookieHeader) return cookies;
+  const cookieStrings = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+  cookieStrings.forEach((cookieStr) => {
+    const cookie = cookieStr.split(";")[0];
+    const [name, ...valueParts] = cookie.split("=");
+    const value = valueParts.join("=");
+    if (name && value) cookies[name.trim()] = value.trim();
+  });
+  return cookies;
+}
+__name(parseSetCookies, "parseSetCookies");
+
+// ==================== 新增路由处理函数 ====================
+async function handleAuthCheck(request, env) {
+  try {
+    const authHeader = request.headers.get("Authorization");
+    const clientCookies = parseCookies(request.headers.get("cookie") || "");
+    
+    // 检查是否已通过身份验证（有特定的认证 Cookie）
+    const isAuthenticated = "auth_token" in clientCookies || 
+                           (authHeader && authHeader.startsWith("Basic "));
+    
+    if (!isAuthenticated) {
+      // 返回 401 触发浏览器原生身份验证弹窗
+      return new Response("需要身份验证", {
         status: 401,
         headers: {
-          'WWW-Authenticate': 'Basic realm="请使用默认密码登录"',
-          'Content-Type': 'text/plain; charset=utf-8'
+          "WWW-Authenticate": 'Basic realm="电子魅魔代理面板", charset="UTF-8"',
+          "Content-Type": "text/plain; charset=utf-8"
         }
       });
     }
     
-    try {
-      // D1数据库初始化检查
-      if (env.DB) {
-        await initDatabase(env.DB);
+    // 验证密码（默认密码：1591156135qwzxcv）
+    if (authHeader) {
+      const base64Credentials = authHeader.split(" ")[1];
+      const credentials = atob(base64Credentials);
+      const [username, password] = credentials.split(":");
+      
+      if (password !== "1591156135qwzxcv") {
+        return new Response("密码错误", { status: 401 });
       }
       
-      // 处理代理接口
-      if (url.pathname === "/_proxy/get-account") {
-        return handleGetAccount(request, targetUrl, env);
-      }
-      if (url.pathname === "/_proxy/check-status") {
-        return handleCheckStatus(request, targetUrl, env);
-      }
-      if (url.pathname === "/_proxy/clear-cookies") {
-        return handleClearCookies(request);
-      }
-      if (url.pathname === "/_proxy/inject-cookie") {
-        return handleInjectCookie(request);
-      }
-      if (url.pathname === "/_proxy/bulk-register") {
-        return handleBulkRegister(request, targetUrl, env);
-      }
-      if (url.pathname === "/_proxy/env-check") {
-        return handleEnvCheck(request, targetUrl);
-      }
-      if (url.pathname === "/_proxy/account-manage") {
-        return handleAccountManage(request, env);
-      }
-      if (url.pathname === "/_proxy/register-progress") {
-        return handleRegisterProgress(request, env);
-      }
+      // 设置认证 Cookie（30天有效期）
+      const authToken = btoa(`${username}:${Date.now()}`);
+      const setCookieHeader = `auth_token=${authToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`;
       
-      return await handleProxyRequest(request, targetUrl, url);
-    } catch (error) {
-      return new Response(`代理错误: ${error.message}`, {
-        status: 500,
-        headers: { "Content-Type": "text/plain" }
-      });
-    }
-  }
-};
-
-// ==================== D1数据库操作 ====================
-async function initDatabase(db) {
-  try {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS account_manage (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL UNIQUE,
-        cookies TEXT NOT NULL,
-        token TEXT,
-        balance INTEGER DEFAULT 35,
-        create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-        update_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-        status TEXT DEFAULT 'active',
-        metadata TEXT DEFAULT '{}'
-      );
-      
-      CREATE TABLE IF NOT EXISTS register_sessions (
-        session_id TEXT PRIMARY KEY,
-        total_count INTEGER DEFAULT 0,
-        completed_count INTEGER DEFAULT 0,
-        failed_count INTEGER DEFAULT 0,
-        status TEXT DEFAULT 'running',
-        start_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-        end_time DATETIME,
-        config TEXT DEFAULT '{}'
-      );
-    `);
-  } catch (error) {
-    console.error("数据库初始化失败:", error);
-  }
-}
-__name(initDatabase, "initDatabase");
-
-async function saveAccountToDB(db, accountData) {
-  try {
-    const { userId, cookies, token, balance = 35 } = accountData;
-    
-    await db.prepare(`
-      INSERT OR REPLACE INTO account_manage 
-      (user_id, cookies, token, balance, update_time)
-      VALUES (?, ?, ?, ?, datetime('now'))
-    `).bind(
-      userId,
-      JSON.stringify(cookies),
-      token || '',
-      balance
-    ).run();
-    
-    return true;
-  } catch (error) {
-    console.error("保存账户到数据库失败:", error);
-    return false;
-  }
-}
-__name(saveAccountToDB, "saveAccountToDB");
-
-async function getAccountsFromDB(db, limit = 100) {
-  try {
-    const { results } = await db.prepare(`
-      SELECT * FROM account_manage 
-      ORDER BY update_time DESC 
-      LIMIT ?
-    `).bind(limit).all();
-    
-    return results;
-  } catch (error) {
-    console.error("获取账户列表失败:", error);
-    return [];
-  }
-}
-__name(getAccountsFromDB, "getAccountsFromDB");
-
-// ==================== 身份验证 ====================
-async function authenticateRequest(request, env) {
-  // 检查是否有有效的认证Cookie
-  const authCookie = parseCookies(request.headers.get("cookie") || "")["proxy_auth"];
-  if (authCookie === "authenticated") {
-    return true;
-  }
-  
-  // 检查Basic Auth
-  const authHeader = request.headers.get("Authorization");
-  if (authHeader && authHeader.startsWith("Basic ")) {
-    const base64Credentials = authHeader.substring(6);
-    const credentials = atob(base64Credentials);
-    const [username, password] = credentials.split(":");
-    
-    // 使用默认密码验证
-    if (password === "1591156135qwzxcv") {
-      // 设置认证Cookie
-      const response = new Response(null, {
-        status: 307,
-        headers: {
-          'Location': request.url,
-          'Set-Cookie': 'proxy_auth=authenticated; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400'
+      return new Response(JSON.stringify({ 
+        authenticated: true, 
+        username: username,
+        message: "身份验证成功" 
+      }), {
+        headers: { 
+          "Content-Type": "application/json",
+          "Set-Cookie": setCookieHeader
         }
       });
-      return response;
     }
+    
+    return new Response(JSON.stringify({ 
+      authenticated: true,
+      message: "已通过身份验证" 
+    }), {
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ 
+      error: "身份验证失败", 
+      message: error.message 
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
-  
-  return false;
 }
-__name(authenticateRequest, "authenticateRequest");
+__name(handleAuthCheck, "handleAuthCheck");
 
-// ==================== 批量注册处理 ====================
-async function handleBulkRegister(request, targetUrl, env) {
+async function handleBatchRegister(request, targetUrl, env) {
   try {
     const body = await request.json();
     const { count = 1, autoRefresh = true, refreshDelay = 3000 } = body;
+    const clientIP = request.headers.get("CF-Connecting-IP") || "unknown";
+    const userAgent = request.headers.get("user-agent") || "";
     
-    // 创建注册会话
-    const sessionId = `bulk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const results = [];
+    const errors = [];
+    let registeredCount = 0;
     
-    if (env.DB) {
-      await env.DB.prepare(`
-        INSERT INTO register_sessions 
-        (session_id, total_count, status, config)
-        VALUES (?, ?, 'running', ?)
-      `).bind(
-        sessionId,
-        count,
-        JSON.stringify({ autoRefresh, refreshDelay })
-      ).run();
-    }
-    
-    // 异步执行批量注册
-    ctx.waitUntil(executeBulkRegistration(sessionId, count, targetUrl, env, {
-      autoRefresh,
-      refreshDelay
-    }));
-    
-    return new Response(JSON.stringify({
-      success: true,
-      sessionId,
-      message: `已开始批量注册 ${count} 个账号`,
-      progressUrl: `/_proxy/register-progress?session=${sessionId}`
-    }), {
-      headers: { "Content-Type": "application/json" }
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({
-      success: false,
-      message: `批量注册启动失败: ${error.message}`
-    }), { status: 500 });
-  }
-}
-__name(handleBulkRegister, "handleBulkRegister");
-
-async function executeBulkRegistration(sessionId, count, targetUrl, env, config) {
-  let completed = 0;
-  let failed = 0;
-  
-  for (let i = 0; i < count; i++) {
-    try {
-      // 创建单个账号
-      const accountResult = await createSingleAccount(targetUrl, env);
-      
-      if (accountResult.success) {
-        completed++;
+    // 批量注册逻辑
+    for (let i = 0; i < count; i++) {
+      try {
+        console.log(`开始注册第 ${i + 1}/${count} 个帐号`);
         
-        // 保存到数据库
-        if (env.DB && accountResult.cookies && accountResult.userId) {
-          await saveAccountToDB(env.DB, {
-            userId: accountResult.userId,
-            cookies: accountResult.cookies,
-            token: accountResult.token,
-            balance: accountResult.balance || 35
+        // 1. 清除本地 Cookie
+        const clearResponse = await fetch(new URL("/_proxy/clear-cookies", request.url), {
+          method: "POST",
+          headers: request.headers
+        });
+        
+        if (!clearResponse.ok) {
+          errors.push({ index: i, error: "清除 Cookie 失败" });
+          continue;
+        }
+        
+        // 2. 延迟等待
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // 3. 注册新帐号（使用原 handleGetAccount 逻辑）
+        const registerResponse = await fetch(new URL("/_proxy/get-account", request.url), {
+          method: "POST",
+          headers: request.headers
+        });
+        
+        if (!registerResponse.ok) {
+          const errorText = await registerResponse.text();
+          errors.push({ 
+            index: i, 
+            error: `注册失败: ${registerResponse.status}`,
+            details: errorText
+          });
+          continue;
+        }
+        
+        const registerData = await registerResponse.json();
+        
+        if (!registerData.success) {
+          errors.push({ 
+            index: i, 
+            error: "注册失败",
+            details: registerData.message 
+          });
+          continue;
+        }
+        
+        // 4. 保存到数据库
+        const saveResult = await saveAccountToDB(env, {
+          userId: registerData.userId,
+          cookies: registerData.cookies,
+          token: registerData.cookies["sb-rls-auth-token"] || "",
+          balance: registerData.balance || 35,
+          ipAddress: clientIP,
+          userAgent: userAgent
+        });
+        
+        if (saveResult.success) {
+          registeredCount++;
+          results.push({
+            index: i,
+            userId: registerData.userId,
+            balance: registerData.balance,
+            cookies: Object.keys(registerData.cookies),
+            timestamp: new Date().toISOString()
+          });
+          
+          console.log(`第 ${i + 1} 个帐号注册成功: ${registerData.userId}`);
+        } else {
+          errors.push({ 
+            index: i, 
+            error: "保存到数据库失败",
+            details: saveResult.error 
           });
         }
         
-        // 删除本地Cookie（通过设置过期）
-        if (config.autoRefresh && i < count - 1) {
-          await new Promise(resolve => setTimeout(resolve, config.refreshDelay));
+        // 5. 如果设置了自动刷新，延迟后刷新
+        if (autoRefresh && i < count - 1) {
+          await new Promise(resolve => setTimeout(resolve, refreshDelay));
         }
-      } else {
-        failed++;
+        
+      } catch (error) {
+        errors.push({ 
+          index: i, 
+          error: "注册过程中异常",
+          details: error.message 
+        });
+        console.error(`第 ${i + 1} 个帐号注册异常:`, error);
       }
-      
-      // 更新进度
-      if (env.DB) {
-        await env.DB.prepare(`
-          UPDATE register_sessions 
-          SET completed_count = ?, failed_count = ?
-          WHERE session_id = ?
-        `).bind(completed, failed, sessionId).run();
-      }
-      
-    } catch (error) {
-      failed++;
-      console.error(`第 ${i + 1} 个账号注册失败:`, error);
     }
-  }
-  
-  // 完成会话
-  if (env.DB) {
-    await env.DB.prepare(`
-      UPDATE register_sessions 
-      SET status = 'completed', end_time = datetime('now')
-      WHERE session_id = ?
-    `).bind(sessionId).run();
-  }
-}
-__name(executeBulkRegistration, "executeBulkRegistration");
-
-async function handleRegisterProgress(request, env) {
-  const url = new URL(request.url);
-  const sessionId = url.searchParams.get("session");
-  
-  if (!sessionId || !env.DB) {
-    return new Response(JSON.stringify({ error: "参数错误" }), { status: 400 });
-  }
-  
-  try {
-    const session = await env.DB.prepare(`
-      SELECT * FROM register_sessions WHERE session_id = ?
-    `).bind(sessionId).first();
-    
-    if (!session) {
-      return new Response(JSON.stringify({ error: "会话不存在" }), { status: 404 });
-    }
-    
-    return new Response(JSON.stringify(session), {
-      headers: { "Content-Type": "application/json" }
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
-  }
-}
-__name(handleRegisterProgress, "handleRegisterProgress");
-
-// ==================== 环境检查 ====================
-async function handleEnvCheck(request, targetUrl) {
-  try {
-    const results = [];
-    
-    // 检查 /api/auth/token
-    const tokenResp = await fetch(targetUrl + "/api/auth/token", {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      }
-    });
-    
-    results.push({
-      endpoint: "/api/auth/token",
-      status: tokenResp.status,
-      ok: tokenResp.ok,
-      message: tokenResp.ok ? "正常" : `异常: ${tokenResp.status} ${tokenResp.statusText}`
-    });
-    
-    // 检查 /api/auth/anonymous-sign-in
-    const signinResp = await fetch(targetUrl + "/api/auth/anonymous-sign-in", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      },
-      body: JSON.stringify({ test: "check" })
-    });
-    
-    results.push({
-      endpoint: "/api/auth/anonymous-sign-in",
-      status: signinResp.status,
-      ok: signinResp.ok,
-      message: signinResp.ok ? "正常" : `异常: ${signinResp.status} ${tokenResp.statusText}`
-    });
-    
-    const allOk = results.every(r => r.ok);
     
     return new Response(JSON.stringify({
       success: true,
-      environment: allOk ? "正常" : "异常",
-      timestamp: new Date().toISOString(),
-      results
+      message: `批量注册完成，成功 ${registeredCount}/${count}`,
+      total: count,
+      registered: registeredCount,
+      failed: errors.length,
+      results: results,
+      errors: errors,
+      timestamp: new Date().toISOString()
     }), {
-      headers: { "Content-Type": "application/json" }
+      headers: { 
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      }
     });
     
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
-      environment: "检查失败",
+      message: "批量注册请求处理失败",
       error: error.message
-    }), { status: 500 });
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 }
-__name(handleEnvCheck, "handleEnvCheck");
+__name(handleBatchRegister, "handleBatchRegister");
 
-// ==================== 账号管理 ====================
-async function handleAccountManage(request, env) {
-  if (!env.DB) {
-    return new Response(JSON.stringify({ error: "数据库未配置" }), { status: 500 });
+async function handleEnvironmentCheck(request, targetUrl) {
+  try {
+    const checkResults = [];
+    
+    // 检查接口 1: /api/auth/token
+    try {
+      const tokenResponse = await fetch(`${targetUrl}/api/auth/token`, {
+        method: "GET",
+        headers: {
+          "User-Agent": request.headers.get("user-agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "*/*",
+          "Referer": targetUrl
+        }
+      });
+      
+      checkResults.push({
+        endpoint: "/api/auth/token",
+        status: tokenResponse.status,
+        statusText: tokenResponse.statusText,
+        ok: tokenResponse.ok,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      checkResults.push({
+        endpoint: "/api/auth/token",
+        status: 0,
+        statusText: "请求失败",
+        ok: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // 检查接口 2: /api/auth/anonymous-sign-in
+    try {
+      const signinResponse = await fetch(`${targetUrl}/api/auth/anonymous-sign-in`, {
+        method: "POST",
+        headers: {
+          "User-Agent": request.headers.get("user-agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "*/*",
+          "Content-Type": "application/json",
+          "Referer": targetUrl,
+          "Origin": targetUrl
+        },
+        body: JSON.stringify({
+          code: "test_environment_check",
+          id: "test-" + Date.now(),
+          email: `test-${Date.now()}@anon.com`,
+          fp: { data: {}, hash: "test" }
+        })
+      });
+      
+      checkResults.push({
+        endpoint: "/api/auth/anonymous-sign-in",
+        status: signinResponse.status,
+        statusText: signinResponse.statusText,
+        ok: signinResponse.ok,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      checkResults.push({
+        endpoint: "/api/auth/anonymous-sign-in",
+        status: 0,
+        statusText: "请求失败",
+        ok: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // 分析检查结果
+    const allOk = checkResults.every(r => r.ok);
+    const has401 = checkResults.some(r => r.status === 401);
+    const has429 = checkResults.some(r => r.status === 429);
+    
+    let status = "normal";
+    let message = "环境正常";
+    
+    if (has429) {
+      status = "rate_limited";
+      message = "环境异常：接口限流 (429 Too Many Requests)";
+    } else if (has401) {
+      status = "auth_required";
+      message = "环境正常：需要身份验证 (401 Unauthorized)";
+    } else if (!allOk) {
+      status = "abnormal";
+      message = "环境异常：部分接口不可用";
+    }
+    
+    return new Response(JSON.stringify({
+      success: true,
+      status: status,
+      message: message,
+      environment: "检测完成",
+      results: checkResults,
+      timestamp: new Date().toISOString(),
+      note: "基于您提供的抓包记录检测：401为正常认证要求，429为限流，其他非200状态可能表示环境异常"
+    }), {
+      headers: { 
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      }
+    });
+    
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      status: "error",
+      message: "环境检查失败",
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
-  
+}
+__name(handleEnvironmentCheck, "handleEnvironmentCheck");
+
+async function handleAccountManagement(request, env) {
   try {
     const url = new URL(request.url);
     const action = url.searchParams.get("action") || "list";
     
-    if (action === "list") {
-      const accounts = await getAccountsFromDB(env.DB);
-      return new Response(JSON.stringify({
-        success: true,
-        count: accounts.length,
-        accounts
-      }), {
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-    
-    if (action === "delete") {
-      const userId = url.searchParams.get("user_id");
-      if (!userId) {
-        return new Response(JSON.stringify({ error: "需要user_id参数" }), { status: 400 });
+    switch (action) {
+      case "list": {
+        const limit = parseInt(url.searchParams.get("limit") || "100");
+        const result = await getAccountsFromDB(env, limit);
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
       }
       
-      await env.DB.prepare(`
-        DELETE FROM account_manage WHERE user_id = ?
-      `).bind(userId).run();
+      case "delete": {
+        const userId = url.searchParams.get("user_id");
+        if (!userId) {
+          return new Response(JSON.stringify({
+            success: false,
+            message: "缺少 user_id 参数"
+          }), { status: 400 });
+        }
+        
+        const result = await deleteAccountFromDB(env, userId);
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
       
-      return new Response(JSON.stringify({
-        success: true,
-        message: "账号已删除"
-      }));
+      case "upload": {
+        // 上传当前 Cookie 到数据库
+        const clientCookies = parseCookies(request.headers.get("cookie") || "");
+        const userId = clientCookies["_rid"] || `upload-${Date.now()}`;
+        
+        if (Object.keys(clientCookies).length === 0) {
+          return new Response(JSON.stringify({
+            success: false,
+            message: "没有可上传的 Cookie"
+          }), { status: 400 });
+        }
+        
+        const result = await saveAccountToDB(env, {
+          userId: userId,
+          cookies: clientCookies,
+          token: clientCookies["sb-rls-auth-token"] || "",
+          balance: 35,
+          ipAddress: request.headers.get("CF-Connecting-IP") || "unknown",
+          userAgent: request.headers.get("user-agent") || ""
+        });
+        
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      
+      default:
+        return new Response(JSON.stringify({
+          success: false,
+          message: "未知的操作类型",
+          available_actions: ["list", "delete", "upload"]
+        }), { status: 400 });
     }
-    
-    return new Response(JSON.stringify({ error: "未知操作" }), { status: 400 });
-    
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+    return new Response(JSON.stringify({
+      success: false,
+      message: "帐号管理操作失败",
+      error: error.message
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 }
-__name(handleAccountManage, "handleAccountManage");
+__name(handleAccountManagement, "handleAccountManagement");
 
-// ==================== 创建单个账号（修改版） ====================
-async function createSingleAccount(targetUrl, env) {
+// ==================== 增强的 Cookie 清除函数 ====================
+async function handleClearCookies(request) {
   try {
-    // 监听关键API端点状态
-    const endpoints = [
-      { path: "/api/auth/token", expectedStatus: 200 },
-      { path: "/api/auth/anonymous-sign-in", expectedStatus: 200 }
-    ];
+    // 构建完整的清除 Cookie 头部
+    const setCookieHeaders = COOKIES_TO_CLEAR.map((cookie) => {
+      return `${cookie}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure; Max-Age=0`;
+    });
     
-    // 检查端点状态
-    for (const endpoint of endpoints) {
-      const checkResp = await fetch(targetUrl + endpoint.path, {
-        method: endpoint.path.includes("sign-in") ? "POST" : "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        },
-        body: endpoint.path.includes("sign-in") ? JSON.stringify({}) : undefined
-      });
-      
-      if (!checkResp.ok && checkResp.status !== 429) {
-        throw new Error(`端点 ${endpoint.path} 状态异常: ${checkResp.status}`);
+    // 额外清除可能的子域名 Cookie
+    const additionalCookies = COOKIES_TO_CLEAR.map((cookie) => {
+      return `${cookie}=; Path=/; Domain=.xn--i8s951di30azba.com; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure; Max-Age=0`;
+    });
+    
+    const allHeaders = [...setCookieHeaders, ...additionalCookies];
+    
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: `已清除 ${COOKIES_TO_CLEAR.length} 个 Cookie`,
+      clearedCookies: COOKIES_TO_CLEAR
+    }), {
+      headers: { 
+        "Content-Type": "application/json", 
+        "Set-Cookie": allHeaders.join(", ") 
+      }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ 
+      success: false, 
+      message: "清除 Cookie 失败",
+      error: error.message 
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+}
+__name(handleClearCookies, "handleClearCookies");
+
+// ==================== 状态检测增强 ====================
+async function handleCheckStatus(request, targetUrl) {
+  try {
+    const clientCookies = parseCookies(request.headers.get("cookie") || "");
+    const hasAuth = "sb-rls-auth-token" in clientCookies;
+    
+    let balance = 0;
+    let userInfo = null;
+    let quotaInfo = null;
+    
+    if (hasAuth) {
+      try {
+        // 尝试获取用户信息
+        const meResponse = await fetch(targetUrl + "/api/me", {
+          headers: {
+            "Cookie": request.headers.get("cookie") || ""
+          }
+        });
+        
+        if (meResponse.ok) {
+          const meData = await meResponse.json();
+          balance = meData.credit || 0;
+          userInfo = {
+            id: meData.id,
+            email: meData.email,
+            createdAt: meData.created_at
+          };
+        }
+        
+        // 尝试获取配额信息
+        const quotaResponse = await fetch(targetUrl + "/api/quota", {
+          headers: {
+            "Cookie": request.headers.get("cookie") || ""
+          }
+        });
+        
+        if (quotaResponse.ok) {
+          quotaInfo = await quotaResponse.json();
+        }
+      } catch (error) {
+        console.warn("获取用户信息失败:", error);
       }
     }
     
-    // 使用原有逻辑创建账号（但跳过首页code提取）
+    // 检查关键接口状态
+    const interfaceStatus = {
+      token: { checked: false, status: null, message: "" },
+      signin: { checked: false, status: null, message: "" }
+    };
+    
+    try {
+      const tokenCheck = await fetch(targetUrl + "/api/auth/token", {
+        method: "HEAD"
+      });
+      interfaceStatus.token = {
+        checked: true,
+        status: tokenCheck.status,
+        ok: tokenCheck.ok,
+        message: tokenCheck.statusText
+      };
+    } catch (error) {
+      interfaceStatus.token.message = error.message;
+    }
+    
+    return new Response(JSON.stringify({
+      authenticated: hasAuth,
+      userId: clientCookies["_rid"] || null,
+      cookies: Object.keys(clientCookies),
+      balance: balance,
+      userInfo: userInfo,
+      quotaInfo: quotaInfo,
+      interfaceStatus: interfaceStatus,
+      timestamp: new Date().toISOString(),
+      recommendations: !hasAuth ? [
+        "当前未检测到有效 Cookie",
+        "点击「获取新帐号」按钮创建游客帐号",
+        "或手动注入有效 Cookie"
+      ] : [
+        `当前余额: ${balance} 次免费额度`,
+        "Cookie 有效，可以正常使用聊天功能"
+      ]
+    }), {
+      headers: { 
+        "Content-Type": "application/json", 
+        "Access-Control-Allow-Origin": "*" 
+      }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ 
+      error: "状态检查失败", 
+      message: error.message,
+      timestamp: new Date().toISOString()
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+}
+__name(handleCheckStatus, "handleCheckStatus");
+
+// ==================== 原有函数（完全保留）====================
+async function handleProxyRequest(request, targetUrl, url) {
+  const targetHeaders = new Headers(request.headers);
+  targetHeaders.delete("host");
+  targetHeaders.delete("origin");
+  targetHeaders.delete("referer");
+  targetHeaders.set("origin", targetUrl);
+  targetHeaders.set("referer", targetUrl + url.pathname);
+  const targetRequest = new Request(targetUrl + url.pathname + url.search, {
+    method: request.method,
+    headers: targetHeaders,
+    body: request.body,
+    redirect: "manual"
+  });
+  const response = await fetch(targetRequest);
+  return await processProxyResponse(response, request, url);
+}
+__name(handleProxyRequest, "handleProxyRequest");
+
+async function processProxyResponse(response, originalRequest, url) {
+  const contentType = response.headers.get("content-type") || "";
+  const clonedResponse = response.clone();
+  if (contentType.includes("text/html")) {
+    try {
+      const html = await clonedResponse.text();
+      const modifiedHtml = injectControlPanel(html, url);
+      const newHeaders2 = new Headers(response.headers);
+      newHeaders2.set("Content-Type", "text/html; charset=utf-8");
+      return new Response(modifiedHtml, {
+        status: response.status,
+        headers: newHeaders2
+      });
+    } catch (error) {
+      console.error("HTML注入失败:", error);
+      return response;
+    }
+  }
+  const newHeaders = new Headers(response.headers);
+  newHeaders.set("Access-Control-Allow-Origin", "*");
+  newHeaders.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  newHeaders.set("Access-Control-Allow-Headers", "*");
+  newHeaders.set("Access-Control-Allow-Credentials", "true");
+  newHeaders.delete("content-security-policy");
+  newHeaders.delete("content-security-policy-report-only");
+  return new Response(response.body, {
+    status: response.status,
+    headers: newHeaders
+  });
+}
+__name(processProxyResponse, "processProxyResponse");
+
+async function handleGetAccount(request, targetUrl) {
+  try {
+    const homeHeaders = {
+      "User-Agent": request.headers.get("user-agent") || "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Connection": "keep-alive",
+      "Upgrade-Insecure-Requests": "1"
+    };
+    const homeResp = await fetch(targetUrl, {
+      headers: homeHeaders
+    });
+    if (!homeResp.ok) {
+      throw new Error(`首页请求失败: ${homeResp.status}`);
+    }
+    const html = await homeResp.text();
+    const codeMatch = html.match(/"code":"([^"]+)"/);
+    if (!codeMatch) {
+      throw new Error("无法从首页提取 code");
+    }
+    const code = codeMatch[1];
+    console.log("Extracted code:", code);
     const userId = generateUUID();
     const email = `${userId}@anon.com`;
-    
-    // 构建指纹数据
     const fp = {
       data: {
         audio: {
@@ -500,9 +833,9 @@ async function createSingleAccount(targetUrl, env) {
           cookieEnabled: true,
           productSub: "20030107",
           product: "Gecko",
-          useragent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          useragent: request.headers.get("user-agent") || "Mozilla/5.0 (Linux; Android 10; PBEM00 Build/QKQ1.190918.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7681.2 Mobile Safari/537.36",
           hardwareConcurrency: 8,
-          browser: { name: "Chrome", version: "120.0" },
+          browser: { name: "Chrome", version: "147.0" },
           applePayVersion: 0
         },
         webgl: {
@@ -529,965 +862,87 @@ async function createSingleAccount(targetUrl, env) {
       },
       hash: "77f81202fa12f86b7f77af693c55bf08"
     };
-    
     const requestBody = {
-      code: "direct_access", // 不使用首页提取的code
+      code,
       id: userId,
       email,
       fp
     };
-    
     const requestId = Math.random().toString(36).substring(2, 10);
     const headers = {
       "Content-Type": "application/json",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "User-Agent": request.headers.get("user-agent") || "Mozilla/5.0 (Linux; Android 10; PBEM00 Build/QKQ1.190918.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7681.2 Mobile Safari/537.36",
       "Accept": "*/*",
       "Origin": targetUrl,
       "Referer": targetUrl + "/",
       "x-dzmm-request-id": requestId,
-      "sec-ch-ua": '"Not.A/Brand";v="8", "Chromium";v="120"',
+      "sec-ch-ua": '"Not.A/Brand";v="8", "Chromium";v="147"',
       "sec-ch-ua-mobile": "?0",
-      "sec-ch-ua-platform": '"Windows"'
+      "sec-ch-ua-platform": '"Windows"',
+      "x-requested-with": "mark.via"
     };
-    
+    const clientCookies = parseCookies(request.headers.get("cookie") || "");
+    const phCookie = clientCookies["ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog"];
+    if (phCookie) {
+      headers["Cookie"] = `ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog=${phCookie}`;
+    }
     let response;
     let retries = 3;
-    
     while (retries-- > 0) {
       response = await fetch(targetUrl + "/api/auth/anonymous-sign-in", {
         method: "POST",
         headers,
         body: JSON.stringify(requestBody)
       });
-      
       if (response.status !== 429) break;
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 1e3));
     }
-    
     if (!response || !response.ok) {
       const errorText = response ? await response.text() : "无响应";
       throw new Error(`API返回 ${response?.status || "未知"}: ${errorText}`);
     }
-    
     const responseText = await response.text();
+    console.log(`API Response Status: ${response.status}, Body: ${responseText}`);
     let data;
     try {
       data = JSON.parse(responseText);
     } catch (e) {
       throw new Error("API返回的不是有效JSON");
     }
-    
     const setCookieHeader = response.headers.get("set-cookie");
     const cookies = parseSetCookies(setCookieHeader);
-    
     if (!cookies["_rid"]) cookies["_rid"] = data.id || userId;
     if (!cookies["chosen_language"]) cookies["chosen_language"] = "zh-CN";
     if (!cookies["invite_code"]) cookies["invite_code"] = "-";
-    
-    // 尝试提取token
-    let token = "";
-    if (cookies["sb-rls-auth-token"]) {
-      token = cookies["sb-rls-auth-token"];
-    }
-    
-    return {
-      success: true,
-      userId: cookies["_rid"] || userId,
-      cookies,
-      token,
-      balance: 35,
-      expiresAt: new Date(Date.now() + 3600 * 1000).toISOString()
-    };
-    
-  } catch (error) {
-    console.error("创建账号失败:", error);
-    return {
-      success: false,
-      error: error.message
-    };
-  }
-}
-__name(createSingleAccount, "createSingleAccount");
-
-// ==================== 修改原有函数以支持env参数 ====================
-async function handleGetAccount(request, targetUrl, env) {
-  try {
-    const accountResult = await createSingleAccount(targetUrl, env);
-    
-    if (!accountResult.success) {
-      throw new Error(accountResult.error || "创建账号失败");
-    }
-    
-    // 保存到数据库
-    if (env.DB) {
-      await saveAccountToDB(env.DB, {
-        userId: accountResult.userId,
-        cookies: accountResult.cookies,
-        token: accountResult.token,
-        balance: accountResult.balance
-      });
-    }
-    
     return new Response(JSON.stringify({
       success: true,
       message: "游客账户创建成功",
-      ...accountResult
+      cookies,
+      userId: cookies["_rid"] || data.id,
+      balance: 35,
+      expiresAt: new Date(Date.now() + 3600 * 1e3).toISOString(),
+      note: "通过纯动态流程注册，拥有35次免费额度。"
     }), {
       status: 200,
       headers: {
         "Content-Type": "application/json",
-        "Set-Cookie": Object.entries(accountResult.cookies).map(([name, value]) => 
-          `${name}=${value}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=31536000`
-        ).join(", ")
+        "Set-Cookie": Object.entries(cookies).map(([name, value]) => `${name}=${value}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=31536000`).join(", ")
       }
     });
   } catch (error) {
     console.error(`Error in handleGetAccount: ${error.message}`);
     return new Response(JSON.stringify({
       success: false,
-      message: `创建账户失败: ${error.message}`
+      message: `创建账户失败: ${error.message}`,
+      suggestion: "无法从页面提取code，尝试暗地操作"
     }), {
       status: 500,
       headers: { "Content-Type": "application/json" }
     });
   }
 }
+__name(handleGetAccount, "handleGetAccount");
 
-async function handleCheckStatus(request, targetUrl, env) {
-  try {
-    const clientCookies = parseCookies(request.headers.get("cookie") || "");
-    const hasAuth = "sb-rls-auth-token" in clientCookies;
-    
-    let balance = 0;
-    if (hasAuth) {
-      const meResponse = await fetch(targetUrl + "/api/me", {
-        headers: {
-          "Cookie": request.headers.get("cookie") || ""
-        }
-      });
-      if (meResponse.ok) {
-        const meData = await meResponse.json();
-        balance = meData.credit || 0;
-      }
-    }
-    
-    // 获取数据库中的账号数量
-    let dbAccountCount = 0;
-    if (env.DB) {
-      const { results } = await env.DB.prepare(`
-        SELECT COUNT(*) as count FROM account_manage
-      `).first();
-      dbAccountCount = results ? results.count : 0;
-    }
-    
-    return new Response(JSON.stringify({
-      authenticated: hasAuth,
-      userId: clientCookies["_rid"] || null,
-      cookies: Object.keys(clientCookies),
-      balance,
-      dbAccountCount,
-      timestamp: new Date().toISOString()
-    }), {
-      headers: { 
-        "Content-Type": "application/json", 
-        "Access-Control-Allow-Origin": "*" 
-      }
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ 
-      error: "检查失败", 
-      message: error.message 
-    }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" }
-    });
-  }
-}
-
-// ==================== 修复Cookie删除逻辑 ====================
-async function handleClearCookies(request) {
-  const cookiesToClear = [
-    "sb-rls-auth-token",
-    "_rid",
-    "ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog",
-    "chosen_language",
-    "invite_code",
-    "sessionid",
-    "_ga",
-    "_ga_WTNWK4GPZ6",
-    "_gid"
-  ];
-  
-  const setCookieHeaders = cookiesToClear.map(
-    (cookie) => `${cookie}=deleted; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`
-  );
-  
-  return new Response(JSON.stringify({ 
-    success: true,
-    message: "Cookie已清除",
-    clearedCookies: cookiesToClear
-  }), {
-    headers: { 
-      "Content-Type": "application/json", 
-      "Set-Cookie": setCookieHeaders.join(", ") 
-    }
-  });
-}
-
-// ==================== 代理请求处理（保持不变） ====================
-async function handleProxyRequest(request, targetUrl, url) {
-  const targetHeaders = new Headers(request.headers);
-  targetHeaders.delete("host");
-  targetHeaders.delete("origin");
-  targetHeaders.delete("referer");
-  targetHeaders.set("origin", targetUrl);
-  targetHeaders.set("referer", targetUrl + url.pathname);
-  
-  const targetRequest = new Request(targetUrl + url.pathname + url.search, {
-    method: request.method,
-    headers: targetHeaders,
-    body: request.body,
-    redirect: "manual"
-  });
-  
-  const response = await fetch(targetRequest);
-  return await processProxyResponse(response, request, url);
-}
-__name(handleProxyRequest, "handleProxyRequest");
-
-async function processProxyResponse(response, originalRequest, url) {
-  const contentType = response.headers.get("content-type") || "";
-  const clonedResponse = response.clone();
-  
-  if (contentType.includes("text/html")) {
-    try {
-      const html = await clonedResponse.text();
-      const modifiedHtml = injectControlPanel(html, url);
-      const newHeaders2 = new Headers(response.headers);
-      newHeaders2.set("Content-Type", "text/html; charset=utf-8");
-      return new Response(modifiedHtml, {
-        status: response.status,
-        headers: newHeaders2
-      });
-    } catch (error) {
-      console.error("HTML注入失败:", error);
-      return response;
-    }
-  }
-  
-  const newHeaders = new Headers(response.headers);
-  newHeaders.set("Access-Control-Allow-Origin", "*");
-  newHeaders.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  newHeaders.set("Access-Control-Allow-Headers", "*");
-  newHeaders.set("Access-Control-Allow-Credentials", "true");
-  newHeaders.delete("content-security-policy");
-  newHeaders.delete("content-security-policy-report-only");
-  
-  return new Response(response.body, {
-    status: response.status,
-    headers: newHeaders
-  });
-}
-__name(processProxyResponse, "processProxyResponse");
-
-// ==================== 注入控制面板（iOS毛玻璃效果） ====================
-function injectControlPanel(html, url) {
-  const panelHTML = `
-    <!-- iOS毛玻璃效果控制面板 -->
-    <div id="proxy-control-panel" style="
-      position: fixed;
-      top: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 999999;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      display: none;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    ">
-      <div id="panel-main" style="
-        background: rgba(255, 255, 255, 0.25);
-        backdrop-filter: blur(20px) saturate(180%);
-        -webkit-backdrop-filter: blur(20px) saturate(180%);
-        border-radius: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        box-shadow: 
-          0 8px 32px rgba(0, 0, 0, 0.1),
-          0 1px 3px rgba(0, 0, 0, 0.05),
-          inset 0 1px 0 rgba(255, 255, 255, 0.1);
-        padding: 16px;
-        min-width: 300px;
-        max-width: 90vw;
-        color: #1d1d1f;
-      ">
-        <!-- 标题栏 -->
-        <div style="
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 16px;
-          padding-bottom: 12px;
-          border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-        ">
-          <h3 style="
-            margin: 0;
-            font-size: 17px;
-            font-weight: 600;
-            background: linear-gradient(135deg, #007AFF, #5856D6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-          ">账号管理面板</h3>
-          <button onclick="togglePanel()" style="
-            background: none;
-            border: none;
-            width: 30px;
-            height: 30px;
-            border-radius: 15px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: all 0.2s;
-            color: #8E8E93;
-            font-size: 20px;
-          ">×</button>
-        </div>
-        
-        <!-- 状态信息 -->
-        <div id="status-info" style="margin-bottom: 16px;">
-          <div style="
-            background: rgba(120, 120, 128, 0.12);
-            border-radius: 12px;
-            padding: 12px;
-            margin-bottom: 8px;
-          ">
-            <div style="
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              font-size: 15px;
-            ">
-              <span style="color: #8E8E93;">账号状态</span>
-              <span id="auth-status" style="
-                color: #FF3B30;
-                font-weight: 500;
-              ">未登录</span>
-            </div>
-            <div id="account-details" style="
-              margin-top: 8px;
-              font-size: 13px;
-              color: #8E8E93;
-              display: none;
-            "></div>
-          </div>
-        </div>
-        
-        <!-- 操作按钮 -->
-        <div style="
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 8px;
-          margin-bottom: 12px;
-        ">
-          <button onclick="checkStatus()" style="
-            background: rgba(120, 120, 128, 0.12);
-            border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
-            font-weight: 500;
-            color: #007AFF;
-            cursor: pointer;
-            transition: all 0.2s;
-          ">状态信息</button>
-          <button onclick="showBulkRegister()" style="
-            background: rgba(120, 120, 128, 0.12);
-            border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
-            font-weight: 500;
-            color: #34C759;
-            cursor: pointer;
-            transition: all 0.2s;
-          ">批量注册</button>
-          <button onclick="envCheck()" style="
-            background: rgba(120, 120, 128, 0.12);
-            border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
-            font-weight: 500;
-            color: #FF9500;
-            cursor: pointer;
-            transition: all 0.2s;
-          ">环境检查</button>
-          <button onclick="showAccountManage()" style="
-            background: rgba(120, 120, 128, 0.12);
-            border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
-            font-weight: 500;
-            color: #AF52DE;
-            cursor: pointer;
-            transition: all 0.2s;
-          ">账号管理</button>
-        </div>
-        
-        <!-- 批量注册表单 -->
-        <div id="bulk-register-form" style="
-          background: rgba(120, 120, 128, 0.08);
-          border-radius: 12px;
-          padding: 12px;
-          margin-bottom: 12px;
-          display: none;
-        ">
-          <div style="margin-bottom: 12px;">
-            <label style="
-              display: block;
-              font-size: 13px;
-              color: #8E8E93;
-              margin-bottom: 4px;
-            ">注册数量</label>
-            <input type="number" id="register-count" value="5" min="1" max="100" style="
-              width: 100%;
-              padding: 8px 12px;
-              border-radius: 8px;
-              border: 1px solid rgba(120, 120, 128, 0.2);
-              background: rgba(255, 255, 255, 0.5);
-              font-size: 15px;
-              box-sizing: border-box;
-            ">
-          </div>
-          <div style="margin-bottom: 12px;">
-            <label style="
-              display: block;
-              font-size: 13px;
-              color: #8E8E93;
-              margin-bottom: 4px;
-            ">刷新延迟 (ms)</label>
-            <input type="number" id="refresh-delay" value="3000" min="1000" max="10000" style="
-              width: 100%;
-              padding: 8px 12px;
-              border-radius: 8px;
-              border: 1px solid rgba(120, 120, 128, 0.2);
-              background: rgba(255, 255, 255, 0.5);
-              font-size: 15px;
-              box-sizing: border-box;
-            ">
-          </div>
-          <div style="display: flex; gap: 8px;">
-            <button onclick="startBulkRegister()" style="
-              flex: 1;
-              background: linear-gradient(135deg, #34C759, #30D158);
-              border: none;
-              border-radius: 12px;
-              padding: 12px;
-              font-size: 15px;
-              font-weight: 600;
-              color: white;
-              cursor: pointer;
-              transition: all 0.2s;
-            ">开始注册</button>
-            <button onclick="hideBulkRegister()" style="
-              background: rgba(120, 120, 128, 0.12);
-              border: none;
-              border-radius: 12px;
-              padding: 12px;
-              font-size: 15px;
-              font-weight: 500;
-              color: #8E8E93;
-              cursor: pointer;
-              transition: all 0.2s;
-            ">取消</button>
-          </div>
-        </div>
-        
-        <!-- 进度显示 -->
-        <div id="progress-container" style="
-          background: rgba(120, 120, 128, 0.08);
-          border-radius: 12px;
-          padding: 12px;
-          margin-bottom: 12px;
-          display: none;
-        ">
-          <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-            <span style="font-size: 15px; font-weight: 500;">批量注册进度</span>
-            <span id="progress-text" style="font-size: 13px; color: #8E8E93;">0/0</span>
-          </div>
-          <div style="
-            height: 4px;
-            background: rgba(120, 120, 128, 0.12);
-            border-radius: 2px;
-            overflow: hidden;
-          ">
-            <div id="progress-bar" style="
-              height: 100%;
-              background: linear-gradient(135deg, #34C759, #30D158);
-              width: 0%;
-              transition: width 0.3s;
-            "></div>
-          </div>
-          <div style="margin-top: 8px;">
-            <button onclick="cancelBulkRegister()" style="
-              background: rgba(255, 59, 48, 0.12);
-              border: none;
-              border-radius: 12px;
-              padding: 8px 12px;
-              font-size: 14px;
-              color: #FF3B30;
-              cursor: pointer;
-              transition: all 0.2s;
-            ">取消注册</button>
-          </div>
-        </div>
-        
-        <!-- 消息提示 -->
-        <div id="message-container" style="
-          position: fixed;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          background: rgba(28, 28, 30, 0.9);
-          backdrop-filter: blur(20px);
-          -webkit-backdrop-filter: blur(20px);
-          border-radius: 20px;
-          padding: 20px;
-          min-width: 280px;
-          max-width: 80vw;
-          color: white;
-          display: none;
-          z-index: 1000000;
-          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-        ">
-          <div id="message-content" style="text-align: center;"></div>
-          <div style="
-            display: flex;
-            justify-content: center;
-            gap: 12px;
-            margin-top: 20px;
-          ">
-            <button id="message-confirm" style="
-              background: #007AFF;
-              border: none;
-              border-radius: 12px;
-              padding: 10px 20px;
-              color: white;
-              font-weight: 600;
-              cursor: pointer;
-            ">确认</button>
-            <button id="message-cancel" style="
-              background: rgba(255, 255, 255, 0.1);
-              border: none;
-              border-radius: 12px;
-              padding: 10px 20px;
-              color: white;
-              font-weight: 600;
-              cursor: pointer;
-            ">取消</button>
-          </div>
-        </div>
-      </div>
-    </div>
-    
-    <!-- 触发按钮 -->
-    <div id="panel-trigger" style="
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 999998;
-      opacity: 0;
-      transition: opacity 0.3s;
-    ">
-      <button onclick="showPanel()" style="
-        background: rgba(255, 255, 255, 0.25);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        border-radius: 50%;
-        width: 50px;
-        height: 50px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-        transition: all 0.2s;
-        color: #007AFF;
-        font-size: 20px;
-      ">⚙️</button>
-    </div>
-    
-    <script>
-      let currentSessionId = null;
-      let progressInterval = null;
-      
-      // 页面加载完成后显示面板
-      document.addEventListener('DOMContentLoaded', function() {
-        setTimeout(() => {
-          document.getElementById('panel-trigger').style.opacity = '1';
-          checkInitialStatus();
-        }, 3000); // 3秒后显示
-      });
-      
-      // 面板显示/隐藏
-      function showPanel() {
-        const panel = document.getElementById('proxy-control-panel');
-        panel.style.display = 'block';
-        setTimeout(() => {
-          panel.style.transform = 'translateX(-50%) scale(1)';
-          panel.style.opacity = '1';
-        }, 10);
-      }
-      
-      function togglePanel() {
-        const panel = document.getElementById('proxy-control-panel');
-        if (panel.style.transform.includes('scale(0)')) {
-          panel.style.transform = 'translateX(-50%) scale(1)';
-          panel.style.opacity = '1';
-        } else {
-          panel.style.transform = 'translateX(-50%) scale(0)';
-          panel.style.opacity = '0';
-        }
-      }
-      
-      // 检查初始状态
-      async function checkInitialStatus() {
-        try {
-          const response = await fetch('/_proxy/check-status');
-          const data = await response.json();
-          
-          const authStatus = document.getElementById('auth-status');
-          const accountDetails = document.getElementById('account-details');
-          
-          if (data.authenticated) {
-            authStatus.textContent = '已登录';
-            authStatus.style.color = '#34C759';
-            
-            accountDetails.style.display = 'block';
-            accountDetails.innerHTML = \`
-              <div>用户ID: \${data.userId || '未知'}</div>
-              <div>余额: \${data.balance}次</div>
-              <div>数据库账号: \${data.dbAccountCount || 0}个</div>
-            \`;
-          } else {
-            authStatus.textContent = '未登录';
-            authStatus.style.color = '#FF3B30';
-          }
-        } catch (error) {
-          console.error('状态检查失败:', error);
-        }
-      }
-      
-      // 状态检查
-      async function checkStatus() {
-        try {
-          const response = await fetch('/_proxy/check-status');
-          const data = await response.json();
-          
-          showMessage(
-            \`账号状态检查结果：
-            • 登录状态: \${data.authenticated ? '✅ 已登录' : '❌ 未登录'}
-            • 用户ID: \${data.userId || '无'}
-            • 当前余额: \${data.balance}次
-            • Cookie数量: \${data.cookies?.length || 0}个
-            • 数据库账号: \${data.dbAccountCount || 0}个\`,
-            '确认'
-          );
-        } catch (error) {
-          showMessage(\`状态检查失败: \${error.message}\`, '确认');
-        }
-      }
-      
-      // 批量注册
-      function showBulkRegister() {
-        document.getElementById('bulk-register-form').style.display = 'block';
-      }
-      
-      function hideBulkRegister() {
-        document.getElementById('bulk-register-form').style.display = 'none';
-      }
-      
-      async function startBulkRegister() {
-        const count = parseInt(document.getElementById('register-count').value) || 5;
-        const delay = parseInt(document.getElementById('refresh-delay').value) || 3000;
-        
-        showMessage(
-          \`即将开始批量注册 \${count} 个账号
-          注意：此操作会清除当前Cookie并刷新页面
-          是否继续？\`,
-          '开始注册',
-          '取消'
-        ).then(confirmed => {
-          if (confirmed) {
-            executeBulkRegister(count, delay);
-          }
-        });
-      }
-      
-      async function executeBulkRegister(count, delay) {
-        try {
-          // 先清除Cookie
-          await fetch('/_proxy/clear-cookies');
-          
-          // 开始批量注册
-          const response = await fetch('/_proxy/bulk-register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              count: count,
-              autoRefresh: true,
-              refreshDelay: delay
-            })
-          });
-          
-          const data = await response.json();
-          
-          if (data.success) {
-            currentSessionId = data.sessionId;
-            showProgress(data.sessionId);
-            hideBulkRegister();
-          } else {
-            showMessage(\`批量注册启动失败: \${data.message}\`, '确认');
-          }
-        } catch (error) {
-          showMessage(\`批量注册启动失败: \${error.message}\`, '确认');
-        }
-      }
-      
-      async function showProgress(sessionId) {
-        const progressContainer = document.getElementById('progress-container');
-        progressContainer.style.display = 'block';
-        
-        // 开始轮询进度
-        progressInterval = setInterval(async () => {
-          try {
-            const response = await fetch(\`/_proxy/register-progress?session=\${sessionId}\`);
-            const data = await response.json();
-            
-            const progressText = document.getElementById('progress-text');
-            const progressBar = document.getElementById('progress-bar');
-            
-            if (data.status === 'completed' || data.status === 'failed') {
-              clearInterval(progressInterval);
-              progressText.textContent = \`完成: \${data.completed_count} / \${data.total_count}\`;
-              progressBar.style.width = '100%';
-              
-              setTimeout(() => {
-                progressContainer.style.display = 'none';
-                showMessage(
-                  \`批量注册完成！
-                  成功: \${data.completed_count} 个
-                  失败: \${data.failed_count} 个\`,
-                  '确认'
-                );
-                
-                // 刷新页面
-                location.reload();
-              }, 1000);
-            } else {
-              const progress = (data.completed_count / data.total_count) * 100;
-              progressText.textContent = \`\${data.completed_count} / \${data.total_count}\`;
-              progressBar.style.width = \`\${progress}%\`;
-            }
-          } catch (error) {
-            console.error('获取进度失败:', error);
-          }
-        }, 1000);
-      }
-      
-      function cancelBulkRegister() {
-        if (progressInterval) {
-          clearInterval(progressInterval);
-        }
-        
-        showMessage(
-          '是否确认取消批量注册？已注册的账号将保存到数据库。',
-          '确认取消',
-          '继续注册'
-        ).then(confirmed => {
-          if (confirmed) {
-            document.getElementById('progress-container').style.display = 'none';
-            currentSessionId = null;
-            showMessage('批量注册已取消', '确认');
-          }
-        });
-      }
-      
-      // 环境检查
-      async function envCheck() {
-        try {
-          showMessage('正在进行环境检查...', false);
-          
-          const response = await fetch('/_proxy/env-check');
-          const data = await response.json();
-          
-          let message = \`环境检查结果：
-          整体状态: \${data.environment}\n\n\`;
-          
-          data.results?.forEach(result => {
-            message += \`• \${result.endpoint}: \${result.message}\\n\`;
-          });
-          
-          showMessage(message, '确认');
-        } catch (error) {
-          showMessage(\`环境检查失败: \${error.message}\`, '确认');
-        }
-      }
-      
-      // 账号管理
-      async function showAccountManage() {
-        try {
-          const response = await fetch('/_proxy/account-manage?action=list');
-          const data = await response.json();
-          
-          if (data.success) {
-            let message = \`账号管理 (共 \${data.count} 个账号)\\n\\n\`;
-            
-            data.accounts?.slice(0, 5).forEach(account => {
-              message += \`• \${account.user_id} - \${account.balance}次 (更新: \${new Date(account.update_time).toLocaleDateString()})\\n\`;
-            });
-            
-            if (data.count > 5) {
-              message += \`\\n... 还有 \${data.count - 5} 个账号未显示\`;
-            }
-            
-            showMessage(message, '确认');
-          } else {
-            showMessage(\`获取账号列表失败: \${data.error}\`, '确认');
-          }
-        } catch (error) {
-          showMessage(\`账号管理失败: \${error.message}\`, '确认');
-        }
-      }
-      
-      // 消息提示系统
-      function showMessage(content, confirmText = '确认', cancelText = null) {
-        return new Promise((resolve) => {
-          const container = document.getElementById('message-container');
-          const messageContent = document.getElementById('message-content');
-          const confirmBtn = document.getElementById('message-confirm');
-          const cancelBtn = document.getElementById('message-cancel');
-          
-          messageContent.textContent = content;
-          confirmBtn.textContent = confirmText;
-          
-          if (cancelText) {
-            cancelBtn.textContent = cancelText;
-            cancelBtn.style.display = 'block';
-          } else {
-            cancelBtn.style.display = 'none';
-          }
-          
-          container.style.display = 'block';
-          
-          const handleConfirm = () => {
-            container.style.display = 'none';
-            resolve(true);
-            cleanup();
-          };
-          
-          const handleCancel = () => {
-            container.style.display = 'none';
-            resolve(false);
-            cleanup();
-          };
-          
-          const cleanup = () => {
-            confirmBtn.removeEventListener('click', handleConfirm);
-            cancelBtn.removeEventListener('click', handleCancel);
-          };
-          
-          confirmBtn.addEventListener('click', handleConfirm);
-          cancelBtn.addEventListener('click', handleCancel);
-        });
-      }
-      
-      // 网络请求监控
-      const originalFetch = window.fetch;
-      window.fetch = async function(...args) {
-        const url = typeof args[0] === 'string' ? args[0] : args[0].url;
-        
-        // 监控关键API端点
-        if (url.includes('/api/auth/token') || url.includes('/api/auth/anonymous-sign-in')) {
-          console.log('监控到关键API请求:', url);
-          
-          const response = await originalFetch.apply(this, args);
-          
-          if (!response.ok && response.status !== 429) {
-            console.warn(\`API端点异常: \${url} - \${response.status}\`);
-            
-            if (currentSessionId && response.status === 401) {
-              showMessage(
-                \`检测到IP可能被拉黑，无法获取游客账号
-                状态码: \${response.status}
-                建议暂停批量注册\`,
-                '确认'
-              );
-            }
-          }
-          
-          return response;
-        }
-        
-        return originalFetch.apply(this, args);
-      };
-    </script>
-    
-    <style>
-      @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(-10px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-      
-      @keyframes pulse {
-        0% { transform: scale(1); }
-        50% { transform: scale(1.05); }
-        100% { transform: scale(1); }
-      }
-      
-      #proxy-control-panel {
-        animation: fadeIn 0.3s ease-out;
-      }
-      
-      #panel-trigger button:hover {
-        animation: pulse 1s infinite;
-        background: rgba(255, 255, 255, 0.3);
-      }
-      
-      button:hover {
-        opacity: 0.9;
-        transform: translateY(-1px);
-      }
-      
-      button:active {
-        transform: translateY(0);
-        opacity: 0.8;
-      }
-      
-      @media (max-width: 768px) {
-        #proxy-control-panel {
-          top: 10px;
-          left: 10px;
-          right: 10px;
-          transform: none !important;
-          width: calc(100vw - 20px);
-        }
-        
-        #panel-trigger {
-          top: 10px;
-          right: 10px;
-        }
-      }
-    </style>
-  `;
-  
-  return html.replace("</body>", panelHTML + "</body>");
-}
-__name(injectControlPanel, "injectControlPanel");
-
-// ==================== 原有辅助函数（保持不变） ====================
 async function handleInjectCookie(request) {
   try {
     const body = await request.json();
@@ -1505,33 +960,6 @@ async function handleInjectCookie(request) {
 }
 __name(handleInjectCookie, "handleInjectCookie");
 
-function parseCookies(cookieString) {
-  const cookies = {};
-  if (cookieString) {
-    cookieString.split(";").forEach((cookie) => {
-      const [name, ...valueParts] = cookie.trim().split("=");
-      const value = valueParts.join("=");
-      if (name) cookies[name] = decodeURIComponent(value);
-    });
-  }
-  return cookies;
-}
-__name(parseCookies, "parseCookies");
-
-function parseSetCookies(setCookieHeader) {
-  const cookies = {};
-  if (!setCookieHeader) return cookies;
-  const cookieStrings = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-  cookieStrings.forEach((cookieStr) => {
-    const cookie = cookieStr.split(";")[0];
-    const [name, ...valueParts] = cookie.split("=");
-    const value = valueParts.join("=");
-    if (name && value) cookies[name.trim()] = value.trim();
-  });
-  return cookies;
-}
-__name(parseSetCookies, "parseSetCookies");
-
 function generateUUID() {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = Math.random() * 16 | 0;
@@ -1540,7 +968,923 @@ function generateUUID() {
 }
 __name(generateUUID, "generateUUID");
 
+// ==================== iOS毛玻璃控制面板注入 ====================
+function injectControlPanel(html, url) {
+  const panelHTML = `
+<!-- iOS毛玻璃控制面板 -->
+<div id="ios-control-panel" style="
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2147483647;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+">
+  <!-- 中上角功能按钮 -->
+  <div id="panel-toggle-btn" style="
+    position: fixed;
+    top: 15px;
+    left: 50%;
+    transform: translateX(-50%);
+    pointer-events: auto;
+    z-index: 10000;
+    opacity: 0;
+    transition: opacity 0.5s ease 3s;
+  ">
+    <button onclick="toggleControlPanel()" style="
+      background: rgba(255, 255, 255, 0.25);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 20px;
+      padding: 10px 20px;
+      color: white;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      transition: all 0.3s ease;
+    ">
+      📱 控制面板
+    </button>
+  </div>
+  
+  <!-- 主控制面板 -->
+  <div id="main-panel" style="
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.9);
+    width: 90%;
+    max-width: 400px;
+    max-height: 80vh;
+    overflow-y: auto;
+    background: rgba(255, 255, 255, 0.15);
+    backdrop-filter: blur(30px) saturate(180%);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 24px;
+    padding: 24px;
+    box-shadow: 
+      0 20px 60px rgba(0, 0, 0, 0.3),
+      0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+    pointer-events: auto;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    z-index: 9999;
+  ">
+    <!-- 关闭按钮 -->
+    <div style="text-align: right; margin-bottom: 20px;">
+      <button onclick="closeControlPanel()" style="
+        background: rgba(255, 255, 255, 0.2);
+        border: none;
+        border-radius: 50%;
+        width: 36px;
+        height: 36px;
+        color: white;
+        font-size: 18px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      ">×</button>
+    </div>
+    
+    <!-- 面板标题 -->
+    <h2 style="
+      color: white;
+      margin: 0 0 20px 0;
+      font-size: 24px;
+      font-weight: 700;
+      text-align: center;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    ">🎮 电子魅魔控制中心</h2>
+    
+    <!-- 状态信息 -->
+    <div id="status-info" style="
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 16px;
+    ">
+      <h3 style="color: white; margin: 0 0 12px 0; font-size: 16px;">📊 帐号状态</h3>
+      <div id="status-content" style="color: rgba(255, 255, 255, 0.9); font-size: 14px;">
+        检测中...
+      </div>
+    </div>
+    
+    <!-- 功能按钮组 -->
+    <div style="display: grid; gap: 12px; margin-bottom: 20px;">
+      <button onclick="checkStatus()" style="
+        background: linear-gradient(135deg, rgba(10, 132, 255, 0.8), rgba(0, 122, 255, 0.8));
+        border: none;
+        border-radius: 14px;
+        padding: 16px;
+        color: white;
+        font-weight: 600;
+        font-size: 16px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      ">🔍 检查状态</button>
+      
+      <button onclick="getNewAccount()" style="
+        background: linear-gradient(135deg, rgba(52, 199, 89, 0.8), rgba(48, 209, 88, 0.8));
+        border: none;
+        border-radius: 14px;
+        padding: 16px;
+        color: white;
+        font-weight: 600;
+        font-size: 16px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      ">🆕 获取新帐号</button>
+      
+      <button onclick="showBatchRegister()" style="
+        background: linear-gradient(135deg, rgba(255, 159, 10, 0.8), rgba(255, 149, 0, 0.8));
+        border: none;
+        border-radius: 14px;
+        padding: 16px;
+        color: white;
+        font-weight: 600;
+        font-size: 16px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      ">🔄 批量注册</button>
+      
+      <button onclick="checkEnvironment()" style="
+        background: linear-gradient(135deg, rgba(175, 82, 222, 0.8), rgba(191, 90, 242, 0.8));
+        border: none;
+        border-radius: 14px;
+        padding: 16px;
+        color: white;
+        font-weight: 600;
+        font-size: 16px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      ">🔧 环境检查</button>
+      
+      <button onclick="manageAccounts()" style="
+        background: linear-gradient(135deg, rgba(255, 69, 58, 0.8), rgba(255, 59, 48, 0.8));
+        border: none;
+        border-radius: 14px;
+        padding: 16px;
+        color: white;
+        font-weight: 600;
+        font-size: 16px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      ">📋 帐号管理</button>
+    </div>
+    
+    <!-- 高级功能 -->
+    <details style="
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 14px;
+      padding: 12px;
+      margin-bottom: 16px;
+    ">
+      <summary style="color: white; font-weight: 600; cursor: pointer;">⚙️ 高级功能</summary>
+      <div style="margin-top: 12px; display: grid; gap: 8px;">
+        <button onclick="injectCookie()" style="
+          background: rgba(255, 255, 255, 0.15);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 10px;
+          padding: 10px;
+          color: white;
+          font-size: 14px;
+          cursor: pointer;
+        ">🍪 注入Cookie</button>
+        
+        <button onclick="clearCookies()" style="
+          background: rgba(255, 255, 255, 0.15);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 10px;
+          padding: 10px;
+          color: white;
+          font-size: 14px;
+          cursor: pointer;
+        ">🗑️ 清除Cookie</button>
+        
+        <button onclick="uploadCurrentCookie()" style="
+          background: rgba(255, 255, 255, 0.15);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 10px;
+          padding: 10px;
+          color: white;
+          font-size: 14px;
+          cursor: pointer;
+        ">📤 上传当前Cookie</button>
+      </div>
+    </details>
+    
+    <!-- 底部信息 -->
+    <div style="
+      text-align: center;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 12px;
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    ">
+      <div>🎯 默认密码: 1591156135qwzxcv</div>
+      <div>💎 新用户额度: 35元/次</div>
+      <div>🕐 面板将在 3 秒后显示</div>
+    </div>
+  </div>
+  
+  <!-- iOS灵动岛通知 -->
+  <div id="ios-notification" style="
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    max-width: 300px;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-radius: 18px;
+    padding: 14px 18px;
+    color: white;
+    font-size: 14px;
+    pointer-events: auto;
+    transform: translateY(-100px);
+    opacity: 0;
+    transition: all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    z-index: 10001;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    display: none;
+  ">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div id="notification-icon" style="font-size: 18px;">💡</div>
+      <div style="flex: 1;">
+        <div id="notification-title" style="font-weight: 600; margin-bottom: 4px;">通知标题</div>
+        <div id="notification-message" style="opacity: 0.9;">通知内容</div>
+      </div>
+      <button onclick="closeNotification()" style="
+        background: none;
+        border: none;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 20px;
+        cursor: pointer;
+        padding: 0;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">×</button>
+    </div>
+  </div>
+  
+  <!-- 批量注册悬浮窗 -->
+  <div id="batch-register-modal" style="
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 90%;
+    max-width: 350px;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(30px);
+    -webkit-backdrop-filter: blur(30px);
+    border-radius: 24px;
+    padding: 24px;
+    color: white;
+    pointer-events: auto;
+    z-index: 10002;
+    display: none;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+  ">
+    <h3 style="margin: 0 0 20px 0; text-align: center;">🔄 批量注册设置</h3>
+    
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; margin-bottom: 8px; opacity: 0.9;">注册数量</label>
+      <input type="number" id="batch-count" value="5" min="1" max="100" style="
+        width: 100%;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+        font-size: 16px;
+        box-sizing: border-box;
+      ">
+    </div>
+    
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; margin-bottom: 8px; opacity: 0.9;">刷新延迟 (毫秒)</label>
+      <input type="number" id="refresh-delay" value="3000" min="1000" max="10000" style="
+        width: 100%;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+        font-size: 16px;
+        box-sizing: border-box;
+      ">
+    </div>
+    
+    <div style="display: flex; gap: 12px; margin-top: 24px;">
+      <button onclick="startBatchRegister()" style="
+        flex: 1;
+        background: linear-gradient(135deg, #34c759, #30d158);
+        border: none;
+        border-radius: 12px;
+        padding: 14px;
+        color: white;
+        font-weight: 600;
+        cursor: pointer;
+      ">开始注册</button>
+      
+      <button onclick="closeBatchModal()" style="
+        flex: 1;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 12px;
+        padding: 14px;
+        color: white;
+        font-weight: 600;
+        cursor: pointer;
+      ">取消</button>
+    </div>
+    
+    <div id="batch-progress" style="
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      display: none;
+    ">
+      <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+        <span>进度</span>
+        <span id="batch-progress-text">0/0</span>
+      </div>
+      <div style="
+        height: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 3px;
+        overflow: hidden;
+      ">
+        <div id="batch-progress-bar" style="
+          height: 100%;
+          width: 0%;
+          background: linear-gradient(90deg, #34c759, #30d158);
+          transition: width 0.3s ease;
+        "></div>
+      </div>
+      <div style="text-align: center; margin-top: 12px;">
+        <button onclick="cancelBatchRegister()" style="
+          background: rgba(255, 59, 48, 0.8);
+          border: none;
+          border-radius: 10px;
+          padding: 8px 16px;
+          color: white;
+          font-size: 14px;
+          cursor: pointer;
+        ">取消注册</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// 全局变量
+let currentBatchProcess = null;
+let notificationTimeout = null;
+
+// 页面加载完成后初始化
+document.addEventListener('DOMContentLoaded', function() {
+  // 延迟3秒后显示控制面板按钮
+  setTimeout(() => {
+    const btn = document.getElementById('panel-toggle-btn');
+    btn.style.opacity = '1';
+    
+    // 显示欢迎通知
+    showNotification('🎉 控制面板已就绪', '页面加载完成，点击顶部按钮打开控制面板', 'info');
+    
+    // 自动检查状态
+    setTimeout(checkStatus, 1000);
+  }, 3000);
+  
+  // 监听网络请求（监控关键接口）
+  const originalFetch = window.fetch;
+  window.fetch = function(...args) {
+    const url = typeof args[0] === 'string' ? args[0] : args[0].url;
+    
+    // 监控关键接口
+    if (url && (url.includes('/api/auth/token') || url.includes('/api/auth/anonymous-sign-in'))) {
+      console.log('监控到关键接口请求:', url);
+      
+      return originalFetch.apply(this, args).then(response => {
+        // 克隆响应以读取状态
+        const clonedResponse = response.clone();
+        
+        if (!response.ok) {
+          showNotification('⚠️ 接口异常', \`\${url} 返回 \${response.status}\`, 'warning');
+        }
+        
+        return response;
+      });
+    }
+    
+    return originalFetch.apply(this, args);
+  };
+});
+
+// 显示iOS风格通知
+function showNotification(title, message, type = 'info') {
+  const notification = document.getElementById('ios-notification');
+  const iconMap = {
+    info: '💡',
+    success: '✅',
+    warning: '⚠️',
+    error: '❌',
+    loading: '⏳'
+  };
+  
+  document.getElementById('notification-icon').textContent = iconMap[type] || '💡';
+  document.getElementById('notification-title').textContent = title;
+  document.getElementById('notification-message').textContent = message;
+  
+  notification.style.display = 'block';
+  setTimeout(() => {
+    notification.style.transform = 'translateY(0)';
+    notification.style.opacity = '1';
+  }, 10);
+  
+  // 自动关闭通知
+  if (notificationTimeout) clearTimeout(notificationTimeout);
+  notificationTimeout = setTimeout(closeNotification, 5000);
+}
+
+function closeNotification() {
+  const notification = document.getElementById('ios-notification');
+  notification.style.transform = 'translateY(-100px)';
+  notification.style.opacity = '0';
+  setTimeout(() => {
+    notification.style.display = 'none';
+  }, 500);
+}
+
+// 控制面板显示/隐藏
+function toggleControlPanel() {
+  const panel = document.getElementById('main-panel');
+  const isVisible = panel.style.visibility === 'visible';
+  
+  if (isVisible) {
+    closeControlPanel();
+  } else {
+    panel.style.visibility = 'visible';
+    panel.style.opacity = '1';
+    panel.style.transform = 'translate(-50%, -50%) scale(1)';
+    showNotification('📱 控制面板', '面板已打开', 'info');
+  }
+}
+
+function closeControlPanel() {
+  const panel = document.getElementById('main-panel');
+  panel.style.opacity = '0';
+  panel.style.transform = 'translate(-50%, -50%) scale(0.9)';
+  setTimeout(() => {
+    panel.style.visibility = 'hidden';
+  }, 400);
+}
+
+// 检查状态
+function checkStatus() {
+  showNotification('⏳ 状态检查', '正在检查帐号状态...', 'loading');
+  
+  fetch('/_proxy/check-status')
+    .then(response => response.json())
+    .then(data => {
+      let statusHtml = '';
+      
+      if (data.authenticated) {
+        statusHtml = \`
+          <div style="color: #34c759; font-weight: 600;">✅ 已登录</div>
+          <div>用户ID: \${data.userId || '未知'}</div>
+          <div>余额: \${data.balance} 次</div>
+          <div>Cookie数量: \${data.cookies.length}</div>
+          <div>\${data.recommendations?.join('<br>') || ''}</div>
+        \`;
+        showNotification('✅ 状态正常', \`已登录，余额: \${data.balance}次\`, 'success');
+      } else {
+        statusHtml = \`
+          <div style="color: #ff3b30; font-weight: 600;">❌ 未登录</div>
+          <div>未检测到有效Cookie</div>
+          <div>\${data.recommendations?.join('<br>') || ''}</div>
+        \`;
+        showNotification('⚠️ 未登录', '点击"获取新帐号"按钮创建游客帐号', 'warning');
+      }
+      
+      document.getElementById('status-content').innerHTML = statusHtml;
+    })
+    .catch(error => {
+      document.getElementById('status-content').innerHTML = \`
+        <div style="color: #ff3b30;">❌ 检查失败</div>
+        <div>\${error.message}</div>
+      \`;
+      showNotification('❌ 检查失败', error.message, 'error');
+    });
+}
+
+// 获取新帐号
+function getNewAccount() {
+  if (!confirm('⚠️ 此操作将清除当前Cookie并创建新帐号，继续吗？')) return;
+  
+  showNotification('⏳ 注册中', '正在创建新帐号...', 'loading');
+  
+  fetch('/_proxy/clear-cookies', { method: 'POST' })
+    .then(() => {
+      return fetch('/_proxy/get-account', { method: 'POST' });
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        showNotification('✅ 注册成功', \`新帐号创建成功，ID: \${data.userId}\`, 'success');
+        
+        // 自动上传到数据库
+        uploadCurrentCookie();
+        
+        // 刷新页面
+        setTimeout(() => {
+          location.reload();
+        }, 2000);
+      } else {
+        showNotification('❌ 注册失败', data.message, 'error');
+      }
+    })
+    .catch(error => {
+      showNotification('❌ 注册失败', error.message, 'error');
+    });
+}
+
+// 批量注册
+function showBatchRegister() {
+  document.getElementById('batch-register-modal').style.display = 'block';
+}
+
+function closeBatchModal() {
+  document.getElementById('batch-register-modal').style.display = 'none';
+  document.getElementById('batch-progress').style.display = 'none';
+}
+
+function startBatchRegister() {
+  const count = parseInt(document.getElementById('batch-count').value) || 5;
+  const delay = parseInt(document.getElementById('refresh-delay').value) || 3000;
+  
+  if (count < 1 || count > 100) {
+    showNotification('❌ 参数错误', '注册数量需在1-100之间', 'error');
+    return;
+  }
+  
+  if (!confirm(\`⚠️ 即将批量注册 \${count} 个帐号，这会清除Cookie并刷新页面，继续吗？\`)) return;
+  
+  // 显示进度条
+  document.getElementById('batch-progress').style.display = 'block';
+  document.getElementById('batch-progress-text').textContent = \`0/\${count}\`;
+  document.getElementById('batch-progress-bar').style.width = '0%';
+  
+  showNotification('🔄 批量注册', \`开始注册 \${count} 个帐号...\`, 'loading');
+  
+  // 开始批量注册
+  let registered = 0;
+  let cancelled = false;
+  
+  currentBatchProcess = {
+    cancel: function() {
+      cancelled = true;
+      showNotification('⏹️ 已取消', '批量注册已被取消', 'warning');
+    }
+  };
+  
+  function registerNext() {
+    if (cancelled || registered >= count) {
+      if (registered >= count) {
+        showNotification('✅ 批量完成', \`成功注册 \${registered} 个帐号\`, 'success');
+        setTimeout(() => location.reload(), 2000);
+      }
+      return;
+    }
+    
+    fetch('/_proxy/clear-cookies', { method: 'POST' })
+      .then(() => {
+        return fetch('/_proxy/get-account', { method: 'POST' });
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          registered++;
+          
+          // 更新进度
+          const progress = (registered / count) * 100;
+          document.getElementById('batch-progress-text').textContent = \`\${registered}/\${count}\`;
+          document.getElementById('batch-progress-bar').style.width = \`\${progress}%\`;
+          
+          // 上传到数据库
+          fetch('/_proxy/account-manage?action=upload', { method: 'POST' });
+          
+          if (registered < count) {
+            setTimeout(registerNext, delay);
+          } else {
+            showNotification('✅ 批量完成', \`成功注册 \${registered} 个帐号\`, 'success');
+            setTimeout(() => location.reload(), 2000);
+          }
+        } else {
+          showNotification('❌ 注册失败', \`第 \${registered + 1} 个帐号注册失败\`, 'error');
+          if (registered < count) {
+            setTimeout(registerNext, delay);
+          }
+        }
+      })
+      .catch(error => {
+        showNotification('❌ 注册失败', \`第 \${registered + 1} 个帐号注册异常\`, 'error');
+        if (registered < count) {
+          setTimeout(registerNext, delay);
+        }
+      });
+  }
+  
+  registerNext();
+}
+
+function cancelBatchRegister() {
+  if (currentBatchProcess) {
+    currentBatchProcess.cancel();
+    currentBatchProcess = null;
+  }
+  closeBatchModal();
+}
+
+// 环境检查
+function checkEnvironment() {
+  showNotification('🔧 环境检查', '正在检查环境状态...', 'loading');
+  
+  fetch('/_proxy/environment-check')
+    .then(response => response.json())
+    .then(data => {
+      let message = data.message;
+      let type = 'info';
+      
+      if (data.status === 'normal' || data.status === 'auth_required') {
+        type = 'success';
+      } else if (data.status === 'rate_limited') {
+        type = 'warning';
+      } else {
+        type = 'error';
+      }
+      
+      showNotification('🔧 环境状态', message, type);
+      
+      // 显示详细结果
+      alert(\`环境检查结果:\\n\\n\${message}\\n\\n详细结果已记录在控制台\`);
+      console.log('环境检查详细结果:', data);
+    })
+    .catch(error => {
+      showNotification('❌ 检查失败', error.message, 'error');
+    });
+}
+
+// 帐号管理
+function manageAccounts() {
+  showNotification('📋 帐号管理', '正在加载帐号列表...', 'loading');
+  
+  fetch('/_proxy/account-manage?action=list')
+    .then(response => response.json())
+    .then(data => {
+      if (data.success && data.accounts.length > 0) {
+        let accountList = '📋 帐号列表:\\n\\n';
+        data.accounts.forEach((acc, index) => {
+          accountList += \`\${index + 1}. ID: \${acc.user_id} (余额: \${acc.balance})\\n\`;
+        });
+        
+        accountList += \`\\n共 \${data.accounts.length} 个帐号\\n\\n是否打开详细管理页面？\`;
+        
+        if (confirm(accountList)) {
+          // 这里可以打开详细管理页面
+          showNotification('📋 帐号管理', \`加载了 \${data.accounts.length} 个帐号\`, 'success');
+        }
+      } else {
+        showNotification('📋 帐号管理', '数据库中没有帐号记录', 'info');
+      }
+    })
+    .catch(error => {
+      showNotification('❌ 加载失败', error.message, 'error');
+    });
+}
+
+// Cookie操作
+function injectCookie() {
+  const cookieStr = prompt('请输入要注入的Cookie字符串（格式: name=value; name2=value2）:');
+  if (!cookieStr) return;
+  
+  const cookies = {};
+  cookieStr.split(';').forEach(pair => {
+    const [name, value] = pair.trim().split('=');
+    if (name && value) cookies[name] = value;
+  });
+  
+  fetch('/_proxy/inject-cookie', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cookies })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      showNotification('✅ Cookie注入', 'Cookie注入成功，即将刷新页面', 'success');
+      setTimeout(() => location.reload(), 1000);
+    } else {
+      showNotification('❌ 注入失败', data.message, 'error');
+    }
+  })
+  .catch(error => {
+    showNotification('❌ 注入失败', error.message, 'error');
+  });
+}
+
+function clearCookies() {
+  if (!confirm('⚠️ 即将清除所有Cookie，这会导致退出登录，继续吗？')) return;
+  
+  fetch('/_proxy/clear-cookies', { method: 'POST' })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        showNotification('✅ Cookie清除', 'Cookie已清除，即将刷新页面', 'success');
+        setTimeout(() => location.reload(), 1000);
+      } else {
+        showNotification('❌ 清除失败', data.message, 'error');
+      }
+    })
+    .catch(error => {
+      showNotification('❌ 清除失败', error.message, 'error');
+    });
+}
+
+function uploadCurrentCookie() {
+  showNotification('📤 上传中', '正在上传当前Cookie到数据库...', 'loading');
+  
+  fetch('/_proxy/account-manage?action=upload', { method: 'POST' })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        showNotification('✅ 上传成功', '当前Cookie已保存到数据库', 'success');
+      } else {
+        showNotification('❌ 上传失败', data.message, 'error');
+      }
+    })
+    .catch(error => {
+      showNotification('❌ 上传失败', error.message, 'error');
+    });
+}
+
+// 身份验证
+function requireAuth() {
+  const username = prompt('请输入用户名:');
+  if (!username) return;
+  
+  const password = prompt('请输入密码:');
+  if (!password) return;
+  
+  const authHeader = 'Basic ' + btoa(\`\${username}:\${password}\`);
+  
+  fetch('/_proxy/auth-check', {
+    headers: { 'Authorization': authHeader }
+  })
+  .then(response => {
+    if (response.ok) {
+      showNotification('✅ 身份验证', '身份验证成功', 'success');
+      return response.json();
+    } else {
+      throw new Error('身份验证失败');
+    }
+  })
+  .then(data => {
+    showNotification('✅ 欢迎回来', \`用户: \${data.username}\`, 'success');
+  })
+  .catch(error => {
+    showNotification('❌ 验证失败', '用户名或密码错误', 'error');
+  });
+}
+
+// 自动检查是否需要身份验证
+setTimeout(() => {
+  fetch('/_proxy/auth-check')
+    .then(response => {
+      if (response.status === 401) {
+        showNotification('🔒 需要登录', '本网站要求进行身份验证', 'info');
+        setTimeout(requireAuth, 1000);
+      }
+    })
+    .catch(() => {});
+}, 2000);
+</script>
+`;
+  
+  // 替换原页面背景为毛玻璃效果
+  const backgroundStyle = `
+    <style>
+      body {
+        position: relative;
+        min-height: 100vh;
+      }
+      body::before {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-image: url('https://www.loliapi.com/acg/');
+        background-size: cover;
+        background-position: center;
+        filter: blur(15px) brightness(0.7);
+        z-index: -1;
+      }
+      body::after {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(45deg, 
+          rgba(79, 195, 247, 0.15), 
+          rgba(176, 196, 222, 0.15),
+          rgba(255, 107, 107, 0.1)
+        );
+        z-index: -1;
+      }
+    </style>
+  `;
+  
+  // 注入背景样式和控制面板
+  let modifiedHtml = html.replace('<head>', `<head>${backgroundStyle}`);
+  return modifiedHtml.replace('</body>', panelHTML + '</body>');
+}
+__name(injectControlPanel, "injectControlPanel");
+
+// ==================== 主Worker入口 ====================
+var worker_default = {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const targetUrl = "https://www.xn--i8s951di30azba.com";
+    
+    // 初始化数据库（如果是第一次请求）
+    if (env.DB) {
+      await initDatabase(env);
+    }
+    
+    // 身份验证检查（所有路径都需要）
+    if (url.pathname !== '/_proxy/auth-check') {
+      const authCheck = await handleAuthCheck(request, env);
+      if (authCheck.status === 401) {
+        return authCheck;
+      }
+    }
+    
+    try {
+      // 原有路由
+      if (url.pathname === "/_proxy/get-account") {
+        return handleGetAccount(request, targetUrl);
+      }
+      if (url.pathname === "/_proxy/check-status") {
+        return handleCheckStatus(request, targetUrl);
+      }
+      if (url.pathname === "/_proxy/clear-cookies") {
+        return handleClearCookies(request);
+      }
+      if (url.pathname === "/_proxy/inject-cookie") {
+        return handleInjectCookie(request);
+      }
+      
+      // 新增路由
+      if (url.pathname === "/_proxy/auth-check") {
+        return handleAuthCheck(request, env);
+      }
+      if (url.pathname === "/_proxy/batch-register") {
+        return handleBatchRegister(request, targetUrl, env);
+      }
+      if (url.pathname === "/_proxy/environment-check") {
+        return handleEnvironmentCheck(request, targetUrl);
+      }
+      if (url.pathname === "/_proxy/account-manage") {
+        return handleAccountManagement(request, env);
+      }
+      
+      // 默认代理请求
+      return await handleProxyRequest(request, targetUrl, url);
+    } catch (error) {
+      return new Response(`代理错误: ${error.message}`, {
+        status: 500,
+        headers: { "Content-Type": "text/plain" }
+      });
+    }
+  }
+};
+
 export {
   worker_default as default
 };
-//# sourceMappingURL=worker.js.map
