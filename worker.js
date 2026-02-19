@@ -1,2872 +1,1767 @@
-// worker.js - 完整详细版本 (2500+行)
-// Cloudflare Worker 控制面板系统
-// 版本: 2.0.0 | 生成时间: 2024
-// ============================================================================
-// 文件说明: 
-// 这是一个完整的Cloudflare Worker控制面板实现，包含完整的UI系统、API管理、
-// 批量操作、监控工具和配置管理。所有功能均有详细实现和错误处理。
-// ============================================================================
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
-// ==================== 1. 全局配置系统 (120行) ====================
-/**
- * 系统全局配置
- * 包含所有可配置参数，支持运行时动态修改
- */
-const WORKER_CONFIG = {
-  // API服务器配置
-  api: {
-    baseUrl: '',                     // API基础地址，如: https://api.example.com
-    version: 'v1',                   // API版本
-    timeout: 15000,                  // 请求超时时间(毫秒)
-    maxRetries: 5,                   // 最大重试次数
-    retryDelay: 1000,                // 重试延迟(毫秒)
-    exponentialBackoff: true,        // 是否启用指数退避
-    cacheEnabled: true,              // 是否启用缓存
-    cacheTTL: 300000,                // 缓存存活时间(毫秒)
-  },
-  
-  // UI配置
-  ui: {
-    theme: 'auto',                   // 主题: light/dark/auto
-    language: 'zh-CN',               // 界面语言
-    animationEnabled: true,          // 是否启用动画
-    dragEnabled: true,               // 是否允许拖拽
-    resizeEnabled: true,             // 是否允许调整大小
-    position: { x: 20, y: 20 },      // 初始位置
-    size: { width: 420, height: 600 }, // 初始尺寸
-    zIndex: 10000,                   // z-index层级
-  },
-  
-  // 功能配置
-  features: {
-    notifications: true,             // 启用通知系统
-    autoRefresh: false,              // 自动刷新数据
-    refreshInterval: 30000,          // 刷新间隔(毫秒)
-    batchProcessing: true,           // 启用批量处理
-    realTimeMonitoring: true,        // 实时监控
-    logging: true,                   // 启用日志记录
-    analytics: true,                 // 启用分析统计
-    offlineSupport: true,            // 离线支持
-  },
-  
-  // 安全配置
-  security: {
-    encryptLocalStorage: true,       // 加密本地存储
-    validateRequests: true,          // 验证请求
-    sanitizeInputs: true,            // 输入消毒
-    rateLimitEnabled: true,          // 启用速率限制
-    corsEnabled: true,               // 启用CORS
-    httpsRequired: true,             // 要求HTTPS
-  },
-  
-  // 性能配置
-  performance: {
-    debounceDelay: 300,              // 防抖延迟(毫秒)
-    throttleDelay: 1000,             // 节流延迟(毫秒)
-    lazyLoadThreshold: 200,          // 懒加载阈值
-    maxConcurrentRequests: 5,        // 最大并发请求数
-    memoryCacheSize: 100,            // 内存缓存大小
-  },
-  
-  // 开发配置
-  development: {
-    debugMode: false,                // 调试模式
-    logLevel: 'info',                // 日志级别: debug/info/warn/error
-    showErrors: true,                // 显示错误详情
-    mockMode: false,                 // 模拟模式
-    profiling: false,                // 性能分析
-  },
-  
-  // 版本信息
-  version: {
-    major: 2,
-    minor: 0,
-    patch: 0,
-    build: '20241231.001',
-    compatibility: '>=1.0.0',
-  },
-  
-  // 元数据
-  metadata: {
-    name: 'Worker Control Panel',
-    description: '完整的Cloudflare Worker控制面板系统',
-    author: 'Worker Development Team',
-    license: 'MIT',
-    repository: 'https://github.com/example/worker-panel',
-    documentation: 'https://docs.example.com',
-  },
-};
-
-// ==================== 2. 全局状态管理系统 (150行) ====================
-/**
- * 全局应用程序状态管理
- * 包含所有运行时状态和数据
- */
-const globalState = {
-  // 用户状态
-  user: {
-    authenticated: false,            // 认证状态
-    id: null,                        // 用户ID
-    username: null,                  // 用户名
-    email: null,                     // 邮箱
-    token: null,                     // 认证令牌
-    permissions: [],                 // 权限列表
-    preferences: {},                 // 用户偏好
-    session: {                       // 会话信息
-      id: null,
-      startedAt: null,
-      lastActivity: null,
-      expiresAt: null,
-    },
-  },
-  
-  // 应用程序状态
-  app: {
-    initialized: false,              // 是否已初始化
-    loading: false,                  // 加载状态
-    error: null,                     // 错误信息
-    warnings: [],                    // 警告列表
-    notifications: [],               // 通知列表
-    currentView: 'dashboard',        // 当前视图
-    previousView: null,              // 前一个视图
-    viewHistory: [],                 // 视图历史
-  },
-  
-  // 数据状态
-  data: {
-    accounts: {                      // 账号数据
-      list: [],
-      filtered: [],
-      selected: [],
-      total: 0,
-      page: 1,
-      pageSize: 20,
-      searchQuery: '',
-      sortBy: 'id',
-      sortOrder: 'desc',
-      lastUpdated: null,
-      loading: false,
-      error: null,
-    },
-    
-    batches: {                       // 批量任务
-      active: [],
-      completed: [],
-      failed: [],
-      queued: [],
-      statistics: {
-        totalProcessed: 0,
-        totalSucceeded: 0,
-        totalFailed: 0,
-        averageTime: 0,
-        successRate: 0,
-      },
-    },
-    
-    api: {                           // API状态
-      endpoints: [],
-      status: {},
-      latency: {},
-      errors: [],
-      statistics: {
-        totalRequests: 0,
-        successfulRequests: 0,
-        failedRequests: 0,
-        averageLatency: 0,
-        uptime: 100,
-      },
-    },
-    
-    environment: {                   // 环境状态
-      checks: {},
-      lastCheck: null,
-      overallStatus: 'unknown',
-      details: {},
-    },
-    
-    settings: {                      // 设置数据
-      current: {},
-      defaults: {},
-      unsavedChanges: false,
-      validationErrors: {},
-    },
-  },
-  
-  // UI状态
-  ui: {
-    controlPanel: {                  // 控制面板状态
-      visible: true,
-      minimized: false,
-      position: WORKER_CONFIG.ui.position,
-      size: WORKER_CONFIG.ui.size,
-      zIndex: WORKER_CONFIG.ui.zIndex,
-      theme: WORKER_CONFIG.ui.theme,
-      dragEnabled: WORKER_CONFIG.ui.dragEnabled,
-      resizeEnabled: WORKER_CONFIG.ui.resizeEnabled,
-    },
-    
-    notifications: {                 // 通知状态
-      list: [],
-      unread: 0,
-      soundEnabled: true,
-      position: 'top-right',
-      maxVisible: 5,
-      autoDismiss: true,
-      dismissTimeout: 5000,
-    },
-    
-    modals: {                        // 模态框状态
-      active: [],
-      stack: [],
-      backdrop: true,
-      escapeToClose: true,
-    },
-    
-    tabs: {                          // 标签页状态
-      active: 'dashboard',
-      history: ['dashboard'],
-      pinned: [],
-    },
-    
-    loading: {                       // 加载状态
-      indicators: {},
-      progress: {},
-      queue: [],
-    },
-  },
-  
-  // 系统状态
-  system: {
-    performance: {                   // 性能指标
-      memory: {
-        used: 0,
-        total: 0,
-        percentage: 0,
-      },
-      cpu: {
-        usage: 0,
-        cores: 0,
-      },
-      network: {
-        latency: 0,
-        bandwidth: 0,
-        online: true,
-      },
-      storage: {
-        used: 0,
-        available: 0,
-        quota: 0,
-      },
-    },
-    
-    resources: {                     // 系统资源
-      memoryCache: new Map(),
-      requestCache: new Map(),
-      connectionPool: new Map(),
-      workerPool: new Map(),
-    },
-    
-    timers: {                        // 定时器
-      intervals: new Map(),
-      timeouts: new Map(),
-      animations: new Map(),
-    },
-    
-    events: {                        // 事件系统
-      listeners: new Map(),
-      emitted: [],
-      pending: [],
-    },
-  },
-  
-  // 历史记录
-  history: {
-    actions: [],                     // 操作历史
-    errors: [],                      // 错误历史
-    apiCalls: [],                    // API调用历史
-    userActions: [],                 // 用户操作历史
-    navigation: [],                  // 导航历史
-  },
-  
-  // 缓存系统
-  cache: {
-    data: new Map(),                 // 数据缓存
-    responses: new Map(),            // 响应缓存
-    templates: new Map(),            // 模板缓存
-    calculations: new Map(),         // 计算缓存
-  },
-};
-
-// ==================== 3. 工具函数库 (800行) ====================
-// 3.1 通用工具函数
-/**
- * 深度克隆对象
- * @param {any} obj - 要克隆的对象
- * @returns {any} 克隆后的对象
- */
-function deepClone(obj) {
-  if (obj === null || typeof obj !== 'object') return obj;
-  if (obj instanceof Date) return new Date(obj.getTime());
-  if (obj instanceof RegExp) return new RegExp(obj);
-  if (obj instanceof Map) return new Map(Array.from(obj.entries()).map(([k, v]) => [k, deepClone(v)]));
-  if (obj instanceof Set) return new Set(Array.from(obj.values()).map(v => deepClone(v)));
-  
-  const cloned = Array.isArray(obj) ? [] : {};
-  for (const key in obj) {
-    if (Object.prototype.hasOwnProperty.call(obj, key)) {
-      cloned[key] = deepClone(obj[key]);
-    }
-  }
-  return cloned;
-}
-
-/**
- * 深度合并对象
- * @param {Object} target - 目标对象
- * @param {...Object} sources - 源对象
- * @returns {Object} 合并后的对象
- */
-function deepMerge(target, ...sources) {
-  if (!sources.length) return target;
-  const source = sources.shift();
-  
-  if (isObject(target) && isObject(source)) {
-    for (const key in source) {
-      if (isObject(source[key])) {
-        if (!target[key]) Object.assign(target, { [key]: {} });
-        deepMerge(target[key], source[key]);
-      } else if (Array.isArray(source[key])) {
-        target[key] = source[key].map(item => 
-          isObject(item) ? deepClone(item) : item
-        );
-      } else {
-        Object.assign(target, { [key]: source[key] });
-      }
-    }
-  }
-  
-  return deepMerge(target, ...sources);
-}
-
-/**
- * 判断是否为对象
- * @param {any} item - 要检查的值
- * @returns {boolean} 是否为对象
- */
-function isObject(item) {
-  return item && typeof item === 'object' && !Array.isArray(item);
-}
-
-/**
- * 生成唯一ID
- * @param {string} prefix - ID前缀
- * @returns {string} 唯一ID
- */
-function generateId(prefix = 'id') {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substr(2, 9);
-  return `${prefix}_${timestamp}_${random}`;
-}
-
-/**
- * 格式化日期时间
- * @param {Date|string|number} date - 日期
- * @param {string} format - 格式字符串
- * @returns {string} 格式化后的日期
- */
-function formatDateTime(date, format = 'YYYY-MM-DD HH:mm:ss') {
-  const d = date instanceof Date ? date : new Date(date);
-  if (isNaN(d.getTime())) return 'Invalid Date';
-  
-  const pad = (n) => n.toString().padStart(2, '0');
-  
-  const replacements = {
-    YYYY: d.getFullYear(),
-    YY: d.getFullYear().toString().substr(-2),
-    MM: pad(d.getMonth() + 1),
-    M: d.getMonth() + 1,
-    DD: pad(d.getDate()),
-    D: d.getDate(),
-    HH: pad(d.getHours()),
-    H: d.getHours(),
-    hh: pad(d.getHours() % 12 || 12),
-    h: d.getHours() % 12 || 12,
-    mm: pad(d.getMinutes()),
-    m: d.getMinutes(),
-    ss: pad(d.getSeconds()),
-    s: d.getSeconds(),
-    SSS: d.getMilliseconds().toString().padStart(3, '0'),
-    A: d.getHours() < 12 ? 'AM' : 'PM',
-    a: d.getHours() < 12 ? 'am' : 'pm',
-  };
-  
-  return format.replace(
-    /YYYY|YY|MM|M|DD|D|HH|H|hh|h|mm|m|ss|s|SSS|A|a/g,
-    match => replacements[match]
-  );
-}
-
-/**
- * 防抖函数
- * @param {Function} func - 要执行的函数
- * @param {number} wait - 等待时间(毫秒)
- * @param {boolean} immediate - 是否立即执行
- * @returns {Function} 防抖后的函数
- */
-function debounce(func, wait = 300, immediate = false) {
-  let timeout;
-  return function executedFunction(...args) {
-    const context = this;
-    const later = () => {
-      timeout = null;
-      if (!immediate) func.apply(context, args);
-    };
-    const callNow = immediate && !timeout;
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-    if (callNow) func.apply(context, args);
-  };
-}
-
-/**
- * 节流函数
- * @param {Function} func - 要执行的函数
- * @param {number} limit - 限制时间(毫秒)
- * @returns {Function} 节流后的函数
- */
-function throttle(func, limit = 1000) {
-  let inThrottle;
-  let lastResult;
-  return function(...args) {
-    const context = this;
-    if (!inThrottle) {
-      inThrottle = true;
-      lastResult = func.apply(context, args);
-      setTimeout(() => inThrottle = false, limit);
-    }
-    return lastResult;
-  };
-}
-
-/**
- * 安全JSON解析
- * @param {string} jsonString - JSON字符串
- * @param {any} defaultValue - 默认值
- * @returns {any} 解析结果
- */
-function safeJsonParse(jsonString, defaultValue = null) {
+// ==================== D1 数据库初始化与操作 ====================
+async function initDatabase(env) {
   try {
-    return JSON.parse(jsonString);
+    const tableCheck = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='account_manage'"
+    ).first();
+    
+    if (!tableCheck) {
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS account_manage (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL UNIQUE,
+          cookies TEXT NOT NULL,
+          token TEXT,
+          balance INTEGER DEFAULT 35,
+          create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          status TEXT DEFAULT 'active',
+          ip_address TEXT,
+          user_agent TEXT,
+          last_used TIMESTAMP
+        )
+      `).run();
+      
+      await env.DB.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_user_id ON account_manage(user_id)
+      `).run();
+      
+      console.log("D1 数据库表 'account_manage' 创建成功");
+    }
   } catch (error) {
-    console.warn('JSON解析失败:', error.message, '原始字符串:', jsonString.substr(0, 100));
-    return defaultValue;
+    console.error("D1 数据库初始化失败:", error);
   }
 }
+__name(initDatabase, "initDatabase");
 
-/**
- * 安全JSON序列化
- * @param {any} data - 要序列化的数据
- * @param {number} space - 缩进空格数
- * @returns {string} JSON字符串
- */
-function safeJsonStringify(data, space = 2) {
+async function saveAccountToDB(env, accountData) {
   try {
-    return JSON.stringify(data, null, space);
-  } catch (error) {
-    console.error('JSON序列化失败:', error);
-    return '{"error": "序列化失败"}';
-  }
-}
-
-// 3.2 数据验证工具
-/**
- * 验证邮箱格式
- * @param {string} email - 邮箱地址
- * @returns {boolean} 是否有效
- */
-function validateEmail(email) {
-  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return re.test(String(email).toLowerCase());
-}
-
-/**
- * 验证URL格式
- * @param {string} url - URL地址
- * @returns {boolean} 是否有效
- */
-function validateUrl(url) {
-  try {
-    new URL(url);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 验证密码强度
- * @param {string} password - 密码
- * @returns {Object} 验证结果
- */
-function validatePassword(password) {
-  const validations = {
-    length: password.length >= 8,
-    hasLowercase: /[a-z]/.test(password),
-    hasUppercase: /[A-Z]/.test(password),
-    hasNumber: /\d/.test(password),
-    hasSpecial: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password),
-  };
-  
-  const score = Object.values(validations).filter(Boolean).length;
-  let strength = 'weak';
-  if (score >= 5) strength = 'strong';
-  else if (score >= 3) strength = 'medium';
-  
-  return {
-    valid: score >= 3,
-    score,
-    strength,
-    details: validations,
-  };
-}
-
-/**
- * 数据消毒
- * @param {any} data - 要消毒的数据
- * @returns {any} 消毒后的数据
- */
-function sanitizeData(data) {
-  if (typeof data === 'string') {
-    // 移除危险字符和脚本标签
-    return data
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/javascript:/gi, '')
-      .replace(/on\w+=/gi, '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#x27;')
-      .replace(/\//g, '&#x2F;')
-      .trim();
-  }
-  
-  if (Array.isArray(data)) {
-    return data.map(item => sanitizeData(item));
-  }
-  
-  if (isObject(data)) {
-    const sanitized = {};
-    for (const key in data) {
-      if (Object.prototype.hasOwnProperty.call(data, key)) {
-        sanitized[key] = sanitizeData(data[key]);
-      }
-    }
-    return sanitized;
-  }
-  
-  return data;
-}
-
-// 3.3 存储管理工具
-/**
- * 本地存储管理器
- */
-const storageManager = {
-  /**
-   * 存储数据
-   * @param {string} key - 存储键
-   * @param {any} value - 存储值
-   * @param {Object} options - 选项
-   */
-  set(key, value, options = {}) {
-    try {
-      const data = {
-        value,
-        timestamp: Date.now(),
-        expires: options.expires ? Date.now() + options.expires : null,
-        version: options.version || '1.0',
-      };
-      
-      let storageString;
-      if (WORKER_CONFIG.security.encryptLocalStorage && options.encrypt !== false) {
-        // 这里可以添加加密逻辑
-        storageString = JSON.stringify(data);
-      } else {
-        storageString = JSON.stringify(data);
-      }
-      
-      localStorage.setItem(`worker_${key}`, storageString);
-      return true;
-    } catch (error) {
-      console.error('存储数据失败:', error);
-      return false;
-    }
-  },
-  
-  /**
-   * 获取数据
-   * @param {string} key - 存储键
-   * @returns {any} 存储值
-   */
-  get(key) {
-    try {
-      const stored = localStorage.getItem(`worker_${key}`);
-      if (!stored) return null;
-      
-      let data;
-      try {
-        data = JSON.parse(stored);
-      } catch {
-        // 如果解析失败，可能是加密数据，这里可以添加解密逻辑
-        data = JSON.parse(stored);
-      }
-      
-      // 检查是否过期
-      if (data.expires && Date.now() > data.expires) {
-        this.remove(key);
-        return null;
-      }
-      
-      return data.value;
-    } catch (error) {
-      console.error('获取数据失败:', error);
-      return null;
-    }
-  },
-  
-  /**
-   * 删除数据
-   * @param {string} key - 存储键
-   */
-  remove(key) {
-    try {
-      localStorage.removeItem(`worker_${key}`);
-    } catch (error) {
-      console.error('删除数据失败:', error);
-    }
-  },
-  
-  /**
-   * 清空所有数据
-   */
-  clear() {
-    try {
-      const keys = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key.startsWith('worker_')) {
-          keys.push(key);
-        }
-      }
-      keys.forEach(key => localStorage.removeItem(key));
-    } catch (error) {
-      console.error('清空数据失败:', error);
-    }
-  },
-  
-  /**
-   * 获取所有键
-   * @returns {string[]} 键列表
-   */
-  keys() {
-    try {
-      const keys = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key.startsWith('worker_')) {
-          keys.push(key.replace('worker_', ''));
-        }
-      }
-      return keys;
-    } catch (error) {
-      console.error('获取键列表失败:', error);
-      return [];
-    }
-  },
-  
-  /**
-   * 获取使用统计
-   * @returns {Object} 统计信息
-   */
-  getStats() {
-    try {
-      let totalSize = 0;
-      const items = [];
-      
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key.startsWith('worker_')) {
-          const value = localStorage.getItem(key);
-          const size = (key.length + value.length) * 2; // 近似大小
-          totalSize += size;
-          
-          let data;
-          try {
-            data = JSON.parse(value);
-          } catch {
-            data = { value: '无法解析' };
-          }
-          
-          items.push({
-            key: key.replace('worker_', ''),
-            size,
-            timestamp: data.timestamp || null,
-            expires: data.expires || null,
-            expired: data.expires && Date.now() > data.expires,
-          });
-        }
-      }
-      
-      return {
-        totalItems: items.length,
-        totalSize,
-        items,
-      };
-    } catch (error) {
-      console.error('获取存储统计失败:', error);
-      return { totalItems: 0, totalSize: 0, items: [] };
-    }
-  },
-};
-
-// 3.4 网络工具
-/**
- * 网络状态检测器
- */
-const networkMonitor = {
-  online: navigator.onLine,
-  lastCheck: Date.now(),
-  latency: 0,
-  bandwidth: 0,
-  
-  /**
-   * 初始化网络监控
-   */
-  init() {
-    window.addEventListener('online', () => this.handleOnline());
-    window.addEventListener('offline', () => this.handleOffline());
-    this.startMonitoring();
-  },
-  
-  /**
-   * 处理在线状态
-   */
-  handleOnline() {
-    this.online = true;
-    this.emitEvent('network:online', { timestamp: Date.now() });
-    this.checkLatency();
-  },
-  
-  /**
-   * 处理离线状态
-   */
-  handleOffline() {
-    this.online = false;
-    this.emitEvent('network:offline', { timestamp: Date.now() });
-  },
-  
-  /**
-   * 开始监控
-   */
-  startMonitoring() {
-    // 定期检查网络状态
-    setInterval(() => {
-      this.checkConnection();
-    }, 30000);
+    const { userId, cookies, token, balance = 35, ipAddress, userAgent } = accountData;
     
-    // 初始检查
-    this.checkConnection();
-  },
-  
-  /**
-   * 检查连接
-   */
-  async checkConnection() {
-    try {
-      const startTime = Date.now();
-      const response = await fetch('https://www.google.com/favicon.ico', {
-        method: 'HEAD',
-        cache: 'no-cache',
-        mode: 'no-cors',
-      });
-      this.latency = Date.now() - startTime;
-      this.online = true;
-      this.lastCheck = Date.now();
-      
-      this.emitEvent('network:status', {
-        online: true,
-        latency: this.latency,
-        timestamp: this.lastCheck,
-      });
-    } catch (error) {
-      this.online = false;
-      this.lastCheck = Date.now();
-      
-      this.emitEvent('network:status', {
-        online: false,
-        error: error.message,
-        timestamp: this.lastCheck,
-      });
-    }
-  },
-  
-  /**
-   * 检查延迟
-   */
-  async checkLatency() {
-    const times = [];
-    for (let i = 0; i < 3; i++) {
-      try {
-        const startTime = Date.now();
-        await fetch('https://www.google.com/favicon.ico', {
-          method: 'HEAD',
-          cache: 'no-cache',
-          mode: 'no-cors',
-        });
-        times.push(Date.now() - startTime);
-      } catch {
-        times.push(9999);
-      }
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
+    const existing = await env.DB.prepare(
+      "SELECT id FROM account_manage WHERE user_id = ?"
+    ).bind(userId).first();
     
-    const validTimes = times.filter(t => t < 9999);
-    this.latency = validTimes.length > 0 
-      ? Math.round(validTimes.reduce((a, b) => a + b, 0) / validTimes.length)
-      : 9999;
-  },
-  
-  /**
-   * 发出事件
-   * @param {string} event - 事件名称
-   * @param {Object} data - 事件数据
-   */
-  emitEvent(event, data) {
-    const eventObj = new CustomEvent(event, { detail: data });
-    window.dispatchEvent(eventObj);
-  },
-  
-  /**
-   * 获取网络状态
-   * @returns {Object} 网络状态
-   */
-  getStatus() {
-    return {
-      online: this.online,
-      latency: this.latency,
-      bandwidth: this.bandwidth,
-      lastCheck: this.lastCheck,
-      connectionType: navigator.connection ? navigator.connection.effectiveType : 'unknown',
-    };
-  },
-};
-
-// 3.5 API请求管理器
-/**
- * API请求管理器
- * 处理所有API请求，包含缓存、重试、超时等功能
- */
-class ApiRequestManager {
-  constructor() {
-    this.queue = [];
-    this.activeRequests = new Map();
-    this.cache = new Map();
-    this.stats = {
-      totalRequests: 0,
-      successfulRequests: 0,
-      failedRequests: 0,
-      cachedResponses: 0,
-      averageLatency: 0,
-    };
-  }
-  
-  /**
-   * 发送API请求
-   * @param {string} endpoint - API端点
-   * @param {Object} options - 请求选项
-   * @returns {Promise<Object>} 响应结果
-   */
-  async request(endpoint, options = {}) {
-    const requestId = generateId('req');
-    const startTime = Date.now();
-    
-    // 构建请求配置
-    const config = this.buildRequestConfig(endpoint, options);
-    
-    // 检查缓存
-    if (config.cacheKey && this.cache.has(config.cacheKey)) {
-      const cached = this.cache.get(config.cacheKey);
-      if (!this.isCacheExpired(cached)) {
-        this.stats.cachedResponses++;
-        return this.createResponse(cached.data, true, 0, requestId);
-      }
-    }
-    
-    // 添加到活动请求
-    this.activeRequests.set(requestId, {
-      config,
-      startTime,
-      retries: 0,
-    });
-    
-    this.stats.totalRequests++;
-    
-    try {
-      // 执行请求
-      const response = await this.executeRequest(requestId, config);
-      const endTime = Date.now();
-      const latency = endTime - startTime;
-      
-      // 更新统计
-      this.stats.successfulRequests++;
-      this.updateAverageLatency(latency);
-      
-      // 缓存响应
-      if (config.cacheKey && response.success) {
-        this.cacheResponse(config.cacheKey, response.data, config.cacheTTL);
-      }
-      
-      // 清理活动请求
-      this.activeRequests.delete(requestId);
-      
-      return this.createResponse(response.data, true, latency, requestId, response.status);
-      
-    } catch (error) {
-      // 处理失败
-      const endTime = Date.now();
-      const latency = endTime - startTime;
-      
-      this.stats.failedRequests++;
-      this.updateAverageLatency(latency);
-      
-      // 清理活动请求
-      this.activeRequests.delete(requestId);
-      
-      return this.createResponse(
-        { error: error.message, code: error.code || 'REQUEST_FAILED' },
-        false,
-        latency,
-        requestId,
-        error.status || 500
-      );
-    }
-  }
-  
-  /**
-   * 构建请求配置
-   * @param {string} endpoint - API端点
-   * @param {Object} options - 请求选项
-   * @returns {Object} 请求配置
-   */
-  buildRequestConfig(endpoint, options) {
-    const url = endpoint.startsWith('http') 
-      ? endpoint 
-      : `${WORKER_CONFIG.api.baseUrl}${endpoint}`;
-    
-    const defaultHeaders = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'User-Agent': `WorkerPanel/${WORKER_CONFIG.version.major}.${WORKER_CONFIG.version.minor}`,
-      'X-Request-ID': generateId('req'),
-      'X-Request-Timestamp': Date.now().toString(),
-    };
-    
-    // 添加认证头
-    if (globalState.user.token) {
-      defaultHeaders['Authorization'] = `Bearer ${globalState.user.token}`;
-    }
-    
-    return {
-      url,
-      method: options.method || 'GET',
-      headers: { ...defaultHeaders, ...options.headers },
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      timeout: options.timeout || WORKER_CONFIG.api.timeout,
-      maxRetries: options.maxRetries || WORKER_CONFIG.api.maxRetries,
-      retryDelay: options.retryDelay || WORKER_CONFIG.api.retryDelay,
-      exponentialBackoff: options.exponentialBackoff !== undefined 
-        ? options.exponentialBackoff 
-        : WORKER_CONFIG.api.exponentialBackoff,
-      cacheKey: options.cacheKey || (options.method === 'GET' ? endpoint : null),
-      cacheTTL: options.cacheTTL || WORKER_CONFIG.api.cacheTTL,
-      validateStatus: options.validateStatus || ((status) => status >= 200 && status < 300),
-      credentials: options.credentials || 'same-origin',
-      mode: options.mode || 'cors',
-      signal: options.signal,
-    };
-  }
-  
-  /**
-   * 执行请求
-   * @param {string} requestId - 请求ID
-   * @param {Object} config - 请求配置
-   * @returns {Promise<Object>} 响应
-   */
-  async executeRequest(requestId, config) {
-    let lastError;
-    
-    for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), config.timeout);
-        
-        const fetchOptions = {
-          method: config.method,
-          headers: config.headers,
-          body: config.body,
-          credentials: config.credentials,
-          mode: config.mode,
-          signal: controller.signal,
-        };
-        
-        const response = await fetch(config.url, fetchOptions);
-        clearTimeout(timeoutId);
-        
-        // 验证状态码
-        if (!config.validateStatus(response.status)) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        // 解析响应
-        let data;
-        const contentType = response.headers.get('content-type') || '';
-        
-        if (contentType.includes('application/json')) {
-          data = await response.json();
-        } else if (contentType.includes('text/')) {
-          data = await response.text();
-        } else {
-          data = await response.blob();
-        }
-        
-        return {
-          data,
-          status: response.status,
-          headers: Object.fromEntries(response.headers.entries()),
-        };
-        
-      } catch (error) {
-        lastError = error;
-        
-        // 如果不是最后一次尝试，等待后重试
-        if (attempt < config.maxRetries) {
-          const delay = config.exponentialBackoff
-            ? config.retryDelay * Math.pow(2, attempt)
-            : config.retryDelay;
-          
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
-      }
-    }
-    
-    throw lastError;
-  }
-  
-  /**
-   * 检查缓存是否过期
-   * @param {Object} cached - 缓存数据
-   * @returns {boolean} 是否过期
-   */
-  isCacheExpired(cached) {
-    if (!cached.expiresAt) return true;
-    return Date.now() > cached.expiresAt;
-  }
-  
-  /**
-   * 缓存响应
-   * @param {string} key - 缓存键
-   * @param {any} data - 数据
-   * @param {number} ttl - 存活时间
-   */
-  cacheResponse(key, data, ttl) {
-    this.cache.set(key, {
-      data,
-      cachedAt: Date.now(),
-      expiresAt: Date.now() + ttl,
-    });
-    
-    // 清理过期缓存
-    this.cleanupCache();
-  }
-  
-  /**
-   * 清理缓存
-   */
-  cleanupCache() {
-    if (this.cache.size > WORKER_CONFIG.performance.memoryCacheSize) {
-      const entries = Array.from(this.cache.entries());
-      entries.sort((a, b) => a[1].cachedAt - b[1].cachedAt);
-      
-      const toRemove = entries.slice(0, entries.length - WORKER_CONFIG.performance.memoryCacheSize);
-      toRemove.forEach(([key]) => this.cache.delete(key));
-    }
-  }
-  
-  /**
-   * 更新平均延迟
-   * @param {number} latency - 新延迟
-   */
-  updateAverageLatency(latency) {
-    const totalLatency = this.stats.averageLatency * (this.stats.successfulRequests - 1) + latency;
-    this.stats.averageLatency = totalLatency / this.stats.successfulRequests;
-  }
-  
-  /**
-   * 创建响应对象
-   * @param {any} data - 响应数据
-   * @param {boolean} success - 是否成功
-   * @param {number} latency - 延迟
-   * @param {string} requestId - 请求ID
-   * @param {number} status - 状态码
-   * @returns {Object} 响应对象
-   */
-  createResponse(data, success, latency, requestId, status = 200) {
-    return {
-      success,
-      data,
-      latency,
-      requestId,
-      status,
-      timestamp: Date.now(),
-      cached: false,
-    };
-  }
-  
-  /**
-   * 获取统计信息
-   * @returns {Object} 统计信息
-   */
-  getStats() {
-    return {
-      ...this.stats,
-      activeRequests: this.activeRequests.size,
-      cacheSize: this.cache.size,
-      queueSize: this.queue.length,
-      successRate: this.stats.totalRequests > 0 
-        ? (this.stats.successfulRequests / this.stats.totalRequests * 100).toFixed(2) 
-        : 0,
-    };
-  }
-  
-  /**
-   * 清除缓存
-   */
-  clearCache() {
-    this.cache.clear();
-  }
-  
-  /**
-   * 取消所有请求
-   */
-  cancelAllRequests() {
-    // 这里可以添加AbortController来取消请求
-    this.activeRequests.clear();
-    this.queue = [];
-  }
-}
-
-// 创建API管理器实例
-const apiManager = new ApiRequestManager();
-
-// 3.6 批量处理管理器
-/**
- * 批量处理管理器
- * 处理批量操作，支持并发控制、进度跟踪、错误处理
- */
-class BatchProcessor {
-  constructor() {
-    this.activeBatches = new Map();
-    this.completedBatches = new Map();
-    this.maxConcurrent = WORKER_CONFIG.performance.maxConcurrentRequests;
-  }
-  
-  /**
-   * 处理批量任务
-   * @param {Array} items - 任务项列表
-   * @param {Function} processor - 处理函数
-   * @param {Object} options - 选项
-   * @returns {Promise<Object>} 处理结果
-   */
-  async process(items, processor, options = {}) {
-    const batchId = generateId('batch');
-    const startTime = Date.now();
-    
-    // 初始化批处理状态
-    const batchState = {
-      id: batchId,
-      total: items.length,
-      processed: 0,
-      succeeded: 0,
-      failed: 0,
-      results: [],
-      startTime,
-      endTime: null,
-      status: 'processing',
-      options,
-    };
-    
-    this.activeBatches.set(batchId, batchState);
-    
-    // 进度回调
-    const progressCallback = options.progressCallback || (() => {});
-    
-    try {
-      // 分批处理
-      const results = await this.processInBatches(items, processor, batchState, progressCallback);
-      
-      // 更新状态
-      batchState.endTime = Date.now();
-      batchState.status = 'completed';
-      batchState.results = results;
-      
-      // 移动到已完成
-      this.activeBatches.delete(batchId);
-      this.completedBatches.set(batchId, batchState);
-      
-      // 生成统计
-      const stats = this.generateStatistics(batchState);
-      
-      return {
-        success: true,
-        batchId,
-        stats,
-        results,
-        duration: batchState.endTime - startTime,
-      };
-      
-    } catch (error) {
-      // 处理失败
-      batchState.endTime = Date.now();
-      batchState.status = 'failed';
-      batchState.error = error.message;
-      
-      this.activeBatches.delete(batchId);
-      this.completedBatches.set(batchId, batchState);
-      
-      return {
-        success: false,
-        batchId,
-        error: error.message,
-        stats: this.generateStatistics(batchState),
-        duration: batchState.endTime - startTime,
-      };
-    }
-  }
-  
-  /**
-   * 分批处理
-   * @param {Array} items - 任务项
-   * @param {Function} processor - 处理函数
-   * @param {Object} batchState - 批处理状态
-   * @param {Function} progressCallback - 进度回调
-   * @returns {Promise<Array>} 处理结果
-   */
-  async processInBatches(items, processor, batchState, progressCallback) {
-    const results = [];
-    const batches = this.chunkArray(items, this.maxConcurrent);
-    
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
-      
-      // 处理当前批次
-      const batchPromises = batch.map((item, index) => 
-        this.processItem(item, processor, batchState, progressCallback)
-      );
-      
-      // 等待当前批次完成
-      const batchResults = await Promise.allSettled(batchPromises);
-      
-      // 处理批次结果
-      batchResults.forEach(result => {
-        if (result.status === 'fulfilled') {
-          results.push(result.value);
-        } else {
-          results.push({
-            success: false,
-            error: result.reason.message,
-            item: null,
-          });
-        }
-      });
-      
-      // 检查是否需要取消
-      if (batchState.status === 'cancelled') {
-        throw new Error('批处理被用户取消');
-      }
-    }
-    
-    return results;
-  }
-  
-  /**
-   * 处理单个项目
-   * @param {any} item - 项目
-   * @param {Function} processor - 处理函数
-   * @param {Object} batchState - 批处理状态
-   * @param {Function} progressCallback - 进度回调
-   * @returns {Promise<Object>} 处理结果
-   */
-  async processItem(item, processor, batchState, progressCallback) {
-    const itemId = generateId('item');
-    const startTime = Date.now();
-    
-    try {
-      // 执行处理
-      const result = await processor(item);
-      const endTime = Date.now();
-      
-      // 更新统计
-      batchState.processed++;
-      batchState.succeeded++;
-      
-      // 调用进度回调
-      progressCallback({
-        batchId: batchState.id,
-        itemId,
-        item,
-        success: true,
-        result,
-        duration: endTime - startTime,
-        progress: {
-          processed: batchState.processed,
-          total: batchState.total,
-          percentage: Math.round((batchState.processed / batchState.total) * 100),
-        },
-      });
-      
-      return {
-        success: true,
-        itemId,
-        item,
-        result,
-        duration: endTime - startTime,
-        timestamp: endTime,
-      };
-      
-    } catch (error) {
-      const endTime = Date.now();
-      
-      // 更新统计
-      batchState.processed++;
-      batchState.failed++;
-      
-      // 调用进度回调
-      progressCallback({
-        batchId: batchState.id,
-        itemId,
-        item,
-        success: false,
-        error: error.message,
-        duration: endTime - startTime,
-        progress: {
-          processed: batchState.processed,
-          total: batchState.total,
-          percentage: Math.round((batchState.processed / batchState.total) * 100),
-        },
-      });
-      
-      return {
-        success: false,
-        itemId,
-        item,
-        error: error.message,
-        duration: endTime - startTime,
-        timestamp: endTime,
-      };
-    }
-  }
-  
-  /**
-   * 数组分块
-   * @param {Array} array - 数组
-   * @param {number} chunkSize - 块大小
-   * @returns {Array} 分块后的数组
-   */
-  chunkArray(array, chunkSize) {
-    const chunks = [];
-    for (let i = 0; i < array.length; i += chunkSize) {
-      chunks.push(array.slice(i, i + chunkSize));
-    }
-    return chunks;
-  }
-  
-  /**
-   * 生成统计信息
-   * @param {Object} batchState - 批处理状态
-   * @returns {Object} 统计信息
-   */
-  generateStatistics(batchState) {
-    const duration = batchState.endTime - batchState.startTime;
-    const itemsPerSecond = duration > 0 
-      ? (batchState.processed / (duration / 1000)).toFixed(2)
-      : 0;
-    
-    return {
-      total: batchState.total,
-      processed: batchState.processed,
-      succeeded: batchState.succeeded,
-      failed: batchState.failed,
-      successRate: batchState.processed > 0 
-        ? (batchState.succeeded / batchState.processed * 100).toFixed(2)
-        : 0,
-      duration,
-      itemsPerSecond,
-      startTime: batchState.startTime,
-      endTime: batchState.endTime,
-      status: batchState.status,
-    };
-  }
-  
-  /**
-   * 取消批处理
-   * @param {string} batchId - 批处理ID
-   */
-  cancelBatch(batchId) {
-    const batch = this.activeBatches.get(batchId);
-    if (batch) {
-      batch.status = 'cancelled';
-    }
-  }
-  
-  /**
-   * 获取批处理状态
-   * @param {string} batchId - 批处理ID
-   * @returns {Object} 状态信息
-   */
-  getBatchStatus(batchId) {
-    const batch = this.activeBatches.get(batchId) || this.completedBatches.get(batchId);
-    if (!batch) return null;
-    
-    return {
-      ...batch,
-      stats: this.generateStatistics(batch),
-    };
-  }
-  
-  /**
-   * 获取所有批处理
-   * @returns {Object} 批处理列表
-   */
-  getAllBatches() {
-    return {
-      active: Array.from(this.activeBatches.values()).map(batch => ({
-        ...batch,
-        stats: this.generateStatistics(batch),
-      })),
-      completed: Array.from(this.completedBatches.values()).map(batch => ({
-        ...batch,
-        stats: this.generateStatistics(batch),
-      })),
-    };
-  }
-  
-  /**
-   * 清理旧批处理
-   * @param {number} maxAge - 最大年龄(毫秒)
-   */
-  cleanupOldBatches(maxAge = 3600000) { // 默认1小时
-    const now = Date.now();
-    const toDelete = [];
-    
-    this.completedBatches.forEach((batch, batchId) => {
-      if (batch.endTime && now - batch.endTime > maxAge) {
-        toDelete.push(batchId);
-      }
-    });
-    
-    toDelete.forEach(batchId => this.completedBatches.delete(batchId));
-  }
-}
-
-// 创建批处理器实例
-const batchProcessor = new BatchProcessor();
-
-// ==================== 4. UI系统 (1200行) ====================
-// 4.1 主题管理器
-/**
- * 主题管理器
- * 处理主题切换、样式管理等
- */
-class ThemeManager {
-  constructor() {
-    this.currentTheme = WORKER_CONFIG.ui.theme;
-    this.themes = {
-      light: {
-        name: '浅色主题',
-        colors: {
-          primary: '#3b82f6',
-          secondary: '#6b7280',
-          success: '#10b981',
-          warning: '#f59e0b',
-          danger: '#ef4444',
-          info: '#3b82f6',
-          
-          background: '#ffffff',
-          surface: '#f9fafb',
-          card: '#ffffff',
-          text: '#111827',
-          textSecondary: '#6b7280',
-          border: '#e5e7eb',
-          shadow: 'rgba(0, 0, 0, 0.1)',
-          
-          hover: '#f3f4f6',
-          active: '#e5e7eb',
-          disabled: '#9ca3af',
-          
-          inputBackground: '#ffffff',
-          inputBorder: '#d1d5db',
-          inputText: '#111827',
-          inputPlaceholder: '#9ca3af',
-        },
-        fonts: {
-          family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-          size: {
-            xs: '12px',
-            sm: '14px',
-            base: '16px',
-            lg: '18px',
-            xl: '20px',
-            '2xl': '24px',
-          },
-          weight: {
-            normal: '400',
-            medium: '500',
-            semibold: '600',
-            bold: '700',
-          },
-        },
-        spacing: {
-          xs: '4px',
-          sm: '8px',
-          md: '16px',
-          lg: '24px',
-          xl: '32px',
-          '2xl': '48px',
-        },
-        borderRadius: {
-          sm: '4px',
-          md: '8px',
-          lg: '12px',
-          xl: '16px',
-          full: '9999px',
-        },
-        shadows: {
-          sm: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
-          md: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-          lg: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
-          xl: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
-          '2xl': '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
-        },
-        transitions: {
-          fast: '150ms',
-          normal: '300ms',
-          slow: '500ms',
-        },
-      },
-      
-      dark: {
-        name: '深色主题',
-        colors: {
-          primary: '#60a5fa',
-          secondary: '#9ca3af',
-          success: '#34d399',
-          warning: '#fbbf24',
-          danger: '#f87171',
-          info: '#60a5fa',
-          
-          background: '#111827',
-          surface: '#1f2937',
-          card: '#374151',
-          text: '#f9fafb',
-          textSecondary: '#d1d5db',
-          border: '#4b5563',
-          shadow: 'rgba(0, 0, 0, 0.3)',
-          
-          hover: '#374151',
-          active: '#4b5563',
-          disabled: '#6b7280',
-          
-          inputBackground: '#1f2937',
-          inputBorder: '#4b5563',
-          inputText: '#f9fafb',
-          inputPlaceholder: '#9ca3af',
-        },
-        fonts: {
-          family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-          size: {
-            xs: '12px',
-            sm: '14px',
-            base: '16px',
-            lg: '18px',
-            xl: '20px',
-            '2xl': '24px',
-          },
-          weight: {
-            normal: '400',
-            medium: '500',
-            semibold: '600',
-            bold: '700',
-          },
-        },
-        spacing: {
-          xs: '4px',
-          sm: '8px',
-          md: '16px',
-          lg: '24px',
-          xl: '32px',
-          '2xl': '48px',
-        },
-        borderRadius: {
-          sm: '4px',
-          md: '8px',
-          lg: '12px',
-          xl: '16px',
-          full: '9999px',
-        },
-        shadows: {
-          sm: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
-          md: '0 4px 6px -1px rgba(0, 0, 0, 0.4)',
-          lg: '0 10px 15px -3px rgba(0, 0, 0, 0.4)',
-          xl: '0 20px 25px -5px rgba(0, 0, 0, 0.4)',
-          '2xl': '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-        },
-        transitions: {
-          fast: '150ms',
-          normal: '300ms',
-          slow: '500ms',
-        },
-      },
-    };
-    
-    this.initialize();
-  }
-  
-  /**
-   * 初始化主题
-   */
-  initialize() {
-    // 检测系统主题偏好
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const savedTheme = storageManager.get('theme');
-    
-    if (savedTheme) {
-      this.currentTheme = savedTheme;
-    } else if (this.currentTheme === 'auto') {
-      this.currentTheme = prefersDark ? 'dark' : 'light';
-    }
-    
-    this.applyTheme();
-    
-    // 监听系统主题变化
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-      if (this.currentTheme === 'auto') {
-        this.currentTheme = e.matches ? 'dark' : 'light';
-        this.applyTheme();
-      }
-    });
-  }
-  
-  /**
-   * 应用当前主题
-   */
-  applyTheme() {
-    const theme = this.getCurrentTheme();
-    const root = document.documentElement;
-    
-    // 设置CSS自定义属性
-    Object.entries(theme.colors).forEach(([key, value]) => {
-      root.style.setProperty(`--color-${key}`, value);
-    });
-    
-    Object.entries(theme.fonts).forEach(([key, value]) => {
-      if (typeof value === 'object') {
-        Object.entries(value).forEach(([subKey, subValue]) => {
-          root.style.setProperty(`--font-${key}-${subKey}`, subValue);
-        });
-      } else {
-        root.style.setProperty(`--font-${key}`, value);
-      }
-    });
-    
-    Object.entries(theme.spacing).forEach(([key, value]) => {
-      root.style.setProperty(`--spacing-${key}`, value);
-    });
-    
-    Object.entries(theme.borderRadius).forEach(([key, value]) => {
-      root.style.setProperty(`--radius-${key}`, value);
-    });
-    
-    Object.entries(theme.shadows).forEach(([key, value]) => {
-      root.style.setProperty(`--shadow-${key}`, value);
-    });
-    
-    Object.entries(theme.transitions).forEach(([key, value]) => {
-      root.style.setProperty(`--transition-${key}`, value);
-    });
-    
-    // 设置data-theme属性
-    root.setAttribute('data-theme', this.currentTheme === 'auto' 
-      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : this.currentTheme
-    );
-    
-    // 保存主题设置
-    storageManager.set('theme', this.currentTheme);
-    
-    // 触发主题变更事件
-    this.emitThemeChange();
-  }
-  
-  /**
-   * 获取当前主题
-   * @returns {Object} 主题对象
-   */
-  getCurrentTheme() {
-    const themeName = this.currentTheme === 'auto'
-      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : this.currentTheme;
-    
-    return this.themes[themeName] || this.themes.light;
-  }
-  
-  /**
-   * 切换主题
-   * @param {string} themeName - 主题名称
-   */
-  setTheme(themeName) {
-    if (this.themes[themeName] || themeName === 'auto') {
-      this.currentTheme = themeName;
-      this.applyTheme();
-      return true;
-    }
-    return false;
-  }
-  
-  /**
-   * 切换主题
-   */
-  toggleTheme() {
-    const current = this.currentTheme === 'auto'
-      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : this.currentTheme;
-    
-    const newTheme = current === 'light' ? 'dark' : 'light';
-    this.setTheme(newTheme);
-  }
-  
-  /**
-   * 获取可用主题列表
-   * @returns {Array} 主题列表
-   */
-  getAvailableThemes() {
-    return [
-      { id: 'light', name: '浅色主题', description: '明亮舒适的界面' },
-      { id: 'dark', name: '深色主题', description: '护眼的暗色界面' },
-      { id: 'auto', name: '自动切换', description: '跟随系统设置' },
-    ];
-  }
-  
-  /**
-   * 发出主题变更事件
-   */
-  emitThemeChange() {
-    const event = new CustomEvent('theme:change', {
-      detail: {
-        theme: this.currentTheme,
-        themeData: this.getCurrentTheme(),
-      },
-    });
-    window.dispatchEvent(event);
-  }
-  
-  /**
-   * 获取主题CSS变量
-   * @returns {string} CSS变量定义
-   */
-  getThemeCSS() {
-    const theme = this.getCurrentTheme();
-    let css = ':root {\n';
-    
-    // 颜色变量
-    Object.entries(theme.colors).forEach(([key, value]) => {
-      css += `  --color-${key}: ${value};\n`;
-    });
-    
-    // 字体变量
-    Object.entries(theme.fonts).forEach(([key, value]) => {
-      if (typeof value === 'object') {
-        Object.entries(value).forEach(([subKey, subValue]) => {
-          css += `  --font-${key}-${subKey}: ${subValue};\n`;
-        });
-      } else {
-        css += `  --font-${key}: ${value};\n`;
-      }
-    });
-    
-    // 间距变量
-    Object.entries(theme.spacing).forEach(([key, value]) => {
-      css += `  --spacing-${key}: ${value};\n`;
-    });
-    
-    // 圆角变量
-    Object.entries(theme.borderRadius).forEach(([key, value]) => {
-      css += `  --radius-${key}: ${value};\n`;
-    });
-    
-    // 阴影变量
-    Object.entries(theme.shadows).forEach(([key, value]) => {
-      css += `  --shadow-${key}: ${value};\n`;
-    });
-    
-    // 过渡变量
-    Object.entries(theme.transitions).forEach(([key, value]) => {
-      css += `  --transition-${key}: ${value};\n`;
-    });
-    
-    css += '}\n';
-    
-    // 添加data-theme属性选择器
-    css += `
-      [data-theme="light"] {
-        color-scheme: light;
-      }
-      
-      [data-theme="dark"] {
-        color-scheme: dark;
-      }
-    `;
-    
-    return css;
-  }
-}
-
-// 创建主题管理器实例
-const themeManager = new ThemeManager();
-
-// 4.2 控制面板UI
-// 由于代码长度限制，这里只展示核心UI注入函数的结构
-// 实际实现中，每个UI组件都会有完整的实现
-
-/**
- * 控制面板UI注入器
- * 完整的控制面板实现，包含所有UI组件和交互
- */
-function injectControlPanel() {
-  // 清理现有元素
-  removeExistingElements();
-  
-  // 创建样式
-  createStyles();
-  
-  // 创建主容器
-  createMainContainer();
-  
-  // 创建面板头部
-  createPanelHeader();
-  
-  // 创建标签导航
-  createTabNavigation();
-  
-  // 创建内容区域
-  createContentArea();
-  
-  // 创建最小化图标
-  createMinimizeIcon();
-  
-  // 初始化拖拽功能
-  initializeDragAndDrop();
-  
-  // 初始化事件监听
-  initializeEventListeners();
-  
-  // 加载初始数据
-  loadInitialData();
-  
-  // 启动定时任务
-  startTimers();
-}
-
-// 由于代码行数限制，这里只展示函数定义
-// 实际每个函数都有完整的实现
-
-function removeExistingElements() {
-  // 详细实现...
-}
-
-function createStyles() {
-  // 详细实现...
-}
-
-function createMainContainer() {
-  // 详细实现...
-}
-
-function createPanelHeader() {
-  // 详细实现...
-}
-
-function createTabNavigation() {
-  // 详细实现...
-}
-
-function createContentArea() {
-  // 详细实现...
-}
-
-function createMinimizeIcon() {
-  // 详细实现...
-}
-
-function initializeDragAndDrop() {
-  // 详细实现...
-}
-
-function initializeEventListeners() {
-  // 详细实现...
-}
-
-function loadInitialData() {
-  // 详细实现...
-}
-
-function startTimers() {
-  // 详细实现...
-}
-
-// 创建仪表板UI
-function createDashboardUI() {
-  // 详细实现...
-}
-
-// 创建账号管理UI
-function createAccountsUI() {
-  // 详细实现...
-}
-
-// 创建批量操作UI
-function createBatchUI() {
-  // 详细实现...
-}
-
-// 创建API测试UI
-function createAPITestUI() {
-  // 详细实现...
-}
-
-// 创建设置UI
-function createSettingsUI() {
-  // 详细实现...
-}
-
-// 创建监控UI
-function createMonitoringUI() {
-  // 详细实现...
-}
-
-// 创建日志UI
-function createLogsUI() {
-  // 详细实现...
-}
-
-// 创建帮助UI
-function createHelpUI() {
-  // 详细实现...
-}
-
-// ==================== 5. 事件系统 (200行) ====================
-// 5.1 事件发射器
-class EventEmitter {
-  constructor() {
-    this.events = new Map();
-  }
-  
-  on(event, listener) {
-    if (!this.events.has(event)) {
-      this.events.set(event, []);
-    }
-    this.events.get(event).push(listener);
-    return () => this.off(event, listener);
-  }
-  
-  off(event, listener) {
-    if (!this.events.has(event)) return;
-    const listeners = this.events.get(event);
-    const index = listeners.indexOf(listener);
-    if (index !== -1) listeners.splice(index, 1);
-  }
-  
-  emit(event, ...args) {
-    if (!this.events.has(event)) return;
-    const listeners = this.events.get(event).slice();
-    for (const listener of listeners) {
-      try {
-        listener(...args);
-      } catch (error) {
-        console.error(`事件处理错误 (${event}):`, error);
-      }
-    }
-  }
-  
-  once(event, listener) {
-    const onceListener = (...args) => {
-      this.off(event, onceListener);
-      listener(...args);
-    };
-    return this.on(event, onceListener);
-  }
-  
-  removeAllListeners(event) {
-    if (event) {
-      this.events.delete(event);
+    if (existing) {
+      await env.DB.prepare(`
+        UPDATE account_manage 
+        SET cookies = ?, token = ?, balance = ?, update_time = CURRENT_TIMESTAMP, 
+            last_used = CURRENT_TIMESTAMP, ip_address = ?, user_agent = ?
+        WHERE user_id = ?
+      `).bind(
+        JSON.stringify(cookies),
+        token || '',
+        balance,
+        ipAddress || '',
+        userAgent || '',
+        userId
+      ).run();
+      console.log(`帐号 ${userId} 已更新到数据库`);
     } else {
-      this.events.clear();
+      await env.DB.prepare(`
+        INSERT INTO account_manage (user_id, cookies, token, balance, ip_address, user_agent)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(
+        userId,
+        JSON.stringify(cookies),
+        token || '',
+        balance,
+        ipAddress || '',
+        userAgent || ''
+      ).run();
+      console.log(`新帐号 ${userId} 已保存到数据库`);
     }
+    
+    return { success: true };
+  } catch (error) {
+    console.error("保存帐号到数据库失败:", error);
+    return { success: false, error: error.message };
   }
 }
+__name(saveAccountToDB, "saveAccountToDB");
 
-// 创建全局事件发射器
-const eventBus = new EventEmitter();
-
-// 5.2 全局事件定义
-const EVENTS = {
-  // UI事件
-  UI_PANEL_SHOW: 'ui:panel:show',
-  UI_PANEL_HIDE: 'ui:panel:hide',
-  UI_PANEL_MINIMIZE: 'ui:panel:minimize',
-  UI_PANEL_RESTORE: 'ui:panel:restore',
-  UI_PANEL_MOVE: 'ui:panel:move',
-  UI_PANEL_RESIZE: 'ui:panel:resize',
-  UI_TAB_CHANGE: 'ui:tab:change',
-  UI_THEME_CHANGE: 'ui:theme:change',
-  
-  // 数据事件
-  DATA_LOAD_START: 'data:load:start',
-  DATA_LOAD_SUCCESS: 'data:load:success',
-  DATA_LOAD_ERROR: 'data:load:error',
-  DATA_UPDATE: 'data:update',
-  DATA_DELETE: 'data:delete',
-  DATA_CREATE: 'data:create',
-  
-  // API事件
-  API_REQUEST_START: 'api:request:start',
-  API_REQUEST_SUCCESS: 'api:request:success',
-  API_REQUEST_ERROR: 'api:request:error',
-  API_REQUEST_COMPLETE: 'api:request:complete',
-  
-  // 批处理事件
-  BATCH_START: 'batch:start',
-  BATCH_PROGRESS: 'batch:progress',
-  BATCH_COMPLETE: 'batch:complete',
-  BATCH_ERROR: 'batch:error',
-  BATCH_CANCEL: 'batch:cancel',
-  
-  // 网络事件
-  NETWORK_ONLINE: 'network:online',
-  NETWORK_OFFLINE: 'network:offline',
-  NETWORK_STATUS_CHANGE: 'network:status:change',
-  
-  // 用户事件
-  USER_LOGIN: 'user:login',
-  USER_LOGOUT: 'user:logout',
-  USER_SESSION_EXPIRE: 'user:session:expire',
-  USER_PERMISSION_CHANGE: 'user:permission:change',
-  
-  // 系统事件
-  SYSTEM_STARTUP: 'system:startup',
-  SYSTEM_SHUTDOWN: 'system:shutdown',
-  SYSTEM_ERROR: 'system:error',
-  SYSTEM_WARNING: 'system:warning',
-  SYSTEM_INFO: 'system:info',
-  
-  // 存储事件
-  STORAGE_SAVE: 'storage:save',
-  STORAGE_LOAD: 'storage:load',
-  STORAGE_DELETE: 'storage:delete',
-  STORAGE_CLEAR: 'storage:clear',
-  
-  // 性能事件
-  PERFORMANCE_METRIC: 'performance:metric',
-  PERFORMANCE_WARNING: 'performance:warning',
-  PERFORMANCE_CRITICAL: 'performance:critical',
-};
-
-// 5.3 事件处理器
-const eventHandlers = {
-  // UI事件处理
-  [EVENTS.UI_PANEL_SHOW]: (data) => {
-    console.log('控制面板显示:', data);
-    globalState.ui.controlPanel.visible = true;
-  },
-  
-  [EVENTS.UI_PANEL_HIDE]: (data) => {
-    console.log('控制面板隐藏:', data);
-    globalState.ui.controlPanel.visible = false;
-  },
-  
-  [EVENTS.UI_PANEL_MINIMIZE]: (data) => {
-    console.log('控制面板最小化:', data);
-    globalState.ui.controlPanel.minimized = true;
-  },
-  
-  [EVENTS.UI_PANEL_RESTORE]: (data) => {
-    console.log('控制面板恢复:', data);
-    globalState.ui.controlPanel.minimized = false;
-  },
-  
-  [EVENTS.UI_THEME_CHANGE]: (data) => {
-    console.log('主题变更:', data);
-    globalState.ui.controlPanel.theme = data.theme;
-  },
-  
-  // 数据事件处理
-  [EVENTS.DATA_LOAD_START]: (data) => {
-    console.log('数据加载开始:', data.type);
-    if (globalState.data[data.type]) {
-      globalState.data[data.type].loading = true;
-    }
-  },
-  
-  [EVENTS.DATA_LOAD_SUCCESS]: (data) => {
-    console.log('数据加载成功:', data.type, '数量:', data.data.length);
-    if (globalState.data[data.type]) {
-      globalState.data[data.type].loading = false;
-      globalState.data[data.type].list = data.data;
-      globalState.data[data.type].lastUpdated = Date.now();
-    }
-  },
-  
-  [EVENTS.DATA_LOAD_ERROR]: (data) => {
-    console.error('数据加载失败:', data.type, data.error);
-    if (globalState.data[data.type]) {
-      globalState.data[data.type].loading = false;
-      globalState.data[data.type].error = data.error;
-    }
-  },
-  
-  // API事件处理
-  [EVENTS.API_REQUEST_START]: (data) => {
-    console.log('API请求开始:', data.endpoint);
-    globalState.data.api.statistics.totalRequests++;
-  },
-  
-  [EVENTS.API_REQUEST_SUCCESS]: (data) => {
-    console.log('API请求成功:', data.endpoint, '延迟:', data.latency);
-    globalState.data.api.statistics.successfulRequests++;
-    globalState.data.api.statistics.averageLatency = 
-      (globalState.data.api.statistics.averageLatency * 
-       (globalState.data.api.statistics.successfulRequests - 1) + 
-       data.latency) / globalState.data.api.statistics.successfulRequests;
-  },
-  
-  [EVENTS.API_REQUEST_ERROR]: (data) => {
-    console.error('API请求失败:', data.endpoint, data.error);
-    globalState.data.api.statistics.failedRequests++;
-    globalState.data.api.errors.push({
-      endpoint: data.endpoint,
-      error: data.error,
-      timestamp: Date.now(),
-    });
-  },
-  
-  // 网络事件处理
-  [EVENTS.NETWORK_ONLINE]: () => {
-    console.log('网络已连接');
-    globalState.system.performance.network.online = true;
-  },
-  
-  [EVENTS.NETWORK_OFFLINE]: () => {
-    console.log('网络已断开');
-    globalState.system.performance.network.online = false;
-  },
-  
-  // 批处理事件处理
-  [EVENTS.BATCH_START]: (data) => {
-    console.log('批处理开始:', data.batchId, '任务数:', data.total);
-    globalState.data.batches.active.push({
-      id: data.batchId,
-      startTime: Date.now(),
-      total: data.total,
-      processed: 0,
-      status: 'processing',
-    });
-  },
-  
-  [EVENTS.BATCH_PROGRESS]: (data) => {
-    const batch = globalState.data.batches.active.find(b => b.id === data.batchId);
-    if (batch) {
-      batch.processed = data.processed;
-      batch.progress = data.progress;
-    }
-  },
-  
-  [EVENTS.BATCH_COMPLETE]: (data) => {
-    console.log('批处理完成:', data.batchId, '统计:', data.stats);
-    const index = globalState.data.batches.active.findIndex(b => b.id === data.batchId);
-    if (index !== -1) {
-      const batch = globalState.data.batches.active.splice(index, 1)[0];
-      batch.endTime = Date.now();
-      batch.status = 'completed';
-      batch.stats = data.stats;
-      globalState.data.batches.completed.push(batch);
-      
-      // 更新全局统计
-      globalState.data.batches.statistics.totalProcessed += data.stats.total;
-      globalState.data.batches.statistics.totalSucceeded += data.stats.succeeded;
-      globalState.data.batches.statistics.totalFailed += data.stats.failed;
-    }
-  },
-};
-
-// 注册事件处理器
-Object.entries(eventHandlers).forEach(([event, handler]) => {
-  eventBus.on(event, handler);
-});
-
-// ==================== 6. 主处理函数 (150行) ====================
-/**
- * Cloudflare Worker主处理函数
- */
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
-});
-
-/**
- * 处理请求
- * @param {Request} request - 请求对象
- * @returns {Promise<Response>} 响应对象
- */
-async function handleRequest(request) {
-  const startTime = Date.now();
-  const requestId = generateId('cf');
-  
+async function getAccountsFromDB(env, limit = 100) {
   try {
-    // 记录请求信息
-    logRequest(request, requestId);
+    const { results } = await env.DB.prepare(
+      "SELECT * FROM account_manage ORDER BY update_time DESC LIMIT ?"
+    ).bind(limit).all();
     
-    // 解析URL
-    const url = new URL(request.url);
-    const path = url.pathname;
+    return { success: true, accounts: results || [] };
+  } catch (error) {
+    console.error("从数据库获取帐号失败:", error);
+    return { success: false, error: error.message, accounts: [] };
+  }
+}
+__name(getAccountsFromDB, "getAccountsFromDB");
+
+async function deleteAccountFromDB(env, userId) {
+  try {
+    await env.DB.prepare(
+      "DELETE FROM account_manage WHERE user_id = ?"
+    ).bind(userId).run();
     
-    // 路由处理
-    let response;
-    if (path === '/health') {
-      response = await handleHealthCheck(request);
-    } else if (path.startsWith('/api/')) {
-      response = await handleAPIRequest(request, path);
-    } else if (path.startsWith('/static/')) {
-      response = await handleStaticRequest(request);
-    } else if (path === '/inject') {
-      response = await handleInjectionRequest(request);
-    } else {
-      response = await handlePageRequest(request);
+    return { success: true };
+  } catch (error) {
+    console.error("从数据库删除帐号失败:", error);
+    return { success: false, error: error.message };
+  }
+}
+__name(deleteAccountFromDB, "deleteAccountFromDB");
+
+// ==================== Cookie 操作增强 ====================
+const COOKIES_TO_CLEAR = [
+  "sb-rls-auth-token",
+  "_rid",
+  "ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog",
+  "chosen_language",
+  "invite_code",
+  "sessionid",
+  "_ga",
+  "_ga_WTNWK4GPZ6",
+  "_gid",
+  "__cf_bm",
+  "__cflb",
+  "__cfruid"
+];
+
+function parseCookies(cookieString) {
+  const cookies = {};
+  if (cookieString) {
+    cookieString.split(";").forEach((cookie) => {
+      const [name, ...valueParts] = cookie.trim().split("=");
+      const value = valueParts.join("=");
+      if (name) cookies[name] = decodeURIComponent(value);
+    });
+  }
+  return cookies;
+}
+__name(parseCookies, "parseCookies");
+
+function parseSetCookies(setCookieHeader) {
+  const cookies = {};
+  if (!setCookieHeader) return cookies;
+  const cookieStrings = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+  cookieStrings.forEach((cookieStr) => {
+    const cookie = cookieStr.split(";")[0];
+    const [name, ...valueParts] = cookie.split("=");
+    const value = valueParts.join("=");
+    if (name && value) cookies[name.trim()] = value.trim();
+  });
+  return cookies;
+}
+__name(parseSetCookies, "parseSetCookies");
+
+// ==================== 新增路由处理函数 ====================
+async function handleAuthCheck(request, env) {
+  try {
+    const authHeader = request.headers.get("Authorization");
+    const clientCookies = parseCookies(request.headers.get("cookie") || "");
+    
+    const isAuthenticated = "auth_token" in clientCookies || 
+                           (authHeader && authHeader.startsWith("Basic "));
+    
+    if (!isAuthenticated) {
+      return new Response("需要身份验证", {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": 'Basic realm="电子魅魔代理面板", charset="UTF-8"',
+          "Content-Type": "text/plain; charset=utf-8"
+        }
+      });
     }
     
-    // 记录响应信息
-    const endTime = Date.now();
-    logResponse(requestId, response, endTime - startTime);
+    if (authHeader) {
+      const base64Credentials = authHeader.split(" ")[1];
+      const credentials = atob(base64Credentials);
+      const [username, password] = credentials.split(":");
+      
+      if (password !== "1591156135qwzxcv") {
+        return new Response("密码错误", { status: 401 });
+      }
+      
+      const authToken = btoa(`${username}:${Date.now()}`);
+      const setCookieHeader = `auth_token=${authToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`;
+      
+      return new Response(JSON.stringify({ 
+        authenticated: true, 
+        username: username,
+        message: "身份验证成功" 
+      }), {
+        headers: { 
+          "Content-Type": "application/json",
+          "Set-Cookie": setCookieHeader
+        }
+      });
+    }
     
-    // 添加监控头
-    response = addMonitoringHeaders(response, endTime - startTime, requestId);
-    
-    return response;
-    
+    return new Response(JSON.stringify({ 
+      authenticated: true,
+      message: "已通过身份验证" 
+    }), {
+      headers: { "Content-Type": "application/json" }
+    });
   } catch (error) {
-    // 错误处理
-    const endTime = Date.now();
-    console.error('请求处理失败:', error);
-    
-    return new Response(JSON.stringify({
-      success: false,
-      error: error.message,
-      requestId,
-      timestamp: Date.now(),
-      duration: endTime - startTime,
+    return new Response(JSON.stringify({ 
+      error: "身份验证失败", 
+      message: error.message 
     }), {
       status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Request-ID': requestId,
-        'X-Response-Time': `${endTime - startTime}ms`,
-      },
+      headers: { "Content-Type": "application/json" }
     });
   }
 }
+__name(handleAuthCheck, "handleAuthCheck");
 
-/**
- * 健康检查
- */
-async function handleHealthCheck(request) {
-  const checks = {
-    api: await checkApiHealth(),
-    database: await checkDatabaseHealth(),
-    cache: await checkCacheHealth(),
-    memory: await checkMemoryHealth(),
-  };
-  
-  const allHealthy = Object.values(checks).every(check => check.healthy);
-  
-  return new Response(JSON.stringify({
-    status: allHealthy ? 'healthy' : 'unhealthy',
-    checks,
-    timestamp: Date.now(),
-    version: WORKER_CONFIG.version,
-    uptime: process.uptime ? process.uptime() : 0,
-  }), {
-    status: allHealthy ? 200 : 503,
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-cache',
-    },
-  });
-}
-
-/**
- * 处理API请求
- */
-async function handleAPIRequest(request, path) {
-  const endpoint = path.replace('/api/', '');
-  const method = request.method;
-  
-  // 验证请求
-  if (!validateApiRequest(request)) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: '请求验证失败',
-    }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-  
-  // 路由到具体处理函数
-  switch (endpoint) {
-    case 'accounts':
-      return handleAccountsAPI(request, method);
-    case 'batch':
-      return handleBatchAPI(request, method);
-    case 'settings':
-      return handleSettingsAPI(request, method);
-    case 'monitoring':
-      return handleMonitoringAPI(request, method);
-    case 'logs':
-      return handleLogsAPI(request, method);
-    default:
-      return new Response(JSON.stringify({
-        success: false,
-        error: '接口不存在',
-        endpoint,
-      }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' },
-      });
-  }
-}
-
-/**
- * 处理静态资源请求
- */
-async function handleStaticRequest(request) {
-  // 这里可以处理静态文件
-  // 实际部署时，应该使用Workers的Assets或外部CDN
-  return new Response('静态资源', {
-    status: 404,
-    headers: { 'Content-Type': 'text/plain' },
-  });
-}
-
-/**
- * 处理注入请求
- */
-async function handleInjectionRequest(request) {
-  const html = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Worker控制面板注入器</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: #f5f5f5;
-          }
-          .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: white;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-          }
-          h1 {
-            color: #333;
-            margin-bottom: 20px;
-          }
-          .btn {
-            background: #3b82f6;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 16px;
-            margin-right: 10px;
-            margin-bottom: 10px;
-          }
-          .btn:hover {
-            background: #2563eb;
-          }
-          .code {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 6px;
-            overflow-x: auto;
-            margin: 20px 0;
-            font-family: 'Courier New', monospace;
-            font-size: 14px;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>Worker控制面板注入器</h1>
-          <p>这是一个完整的Cloudflare Worker控制面板系统，提供账号管理、批量操作、API测试等功能。</p>
-          
-          <div>
-            <button class="btn" onclick="injectPanel()">注入控制面板</button>
-            <button class="btn" onclick="removePanel()">移除控制面板</button>
-            <button class="btn" onclick="testAPI()">测试API</button>
-          </div>
-          
-          <div class="code" id="code-block">
-            // 控制面板已准备就绪
-            // 点击上方按钮开始使用
-          </div>
-          
-          <script>
-            ${injectControlPanel.toString()}
-            
-            function injectPanel() {
-              try {
-                injectControlPanel();
-                document.getElementById('code-block').textContent = '✅ 控制面板注入成功！';
-              } catch (error) {
-                document.getElementById('code-block').textContent = '❌ 注入失败: ' + error.message;
-              }
-            }
-            
-            function removePanel() {
-              const panel = document.getElementById('worker-control-panel');
-              const icon = document.getElementById('worker-min-icon');
-              if (panel) panel.remove();
-              if (icon) icon.remove();
-              document.getElementById('code-block').textContent = '✅ 控制面板已移除';
-            }
-            
-            function testAPI() {
-              document.getElementById('code-block').textContent = '🔄 测试中...';
-              setTimeout(() => {
-                document.getElementById('code-block').textContent = '✅ API测试完成！';
-              }, 1000);
-            }
-          </script>
-        </div>
-      </body>
-    </html>
-  `;
-  
-  return new Response(html, {
-    headers: {
-      'Content-Type': 'text/html; charset=UTF-8',
-      'Cache-Control': 'no-cache',
-    },
-  });
-}
-
-/**
- * 处理页面请求
- */
-async function handlePageRequest(request) {
-  // 获取原始响应
-  const response = await fetch(request);
-  const contentType = response.headers.get('content-type');
-  
-  // 只对HTML页面进行注入
-  if (contentType && contentType.includes('text/html')) {
-    const html = await response.text();
+async function handleBatchRegister(request, targetUrl, env) {
+  try {
+    const body = await request.json();
+    const { count = 1, autoRefresh = true, refreshDelay = 3000 } = body;
+    const clientIP = request.headers.get("CF-Connecting-IP") || "unknown";
+    const userAgent = request.headers.get("user-agent") || "";
     
-    // 检查是否已经注入过
-    if (html.includes('worker-control-panel')) {
-      return response;
-    }
+    const results = [];
+    const errors = [];
+    let registeredCount = 0;
     
-    // 构建注入脚本
-    const injectionScript = buildInjectionScript();
-    
-    // 注入脚本
-    const modifiedHtml = injectScriptIntoHtml(html, injectionScript);
-    
-    return new Response(modifiedHtml, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-  }
-  
-  return response;
-}
-
-/**
- * 构建注入脚本
- */
-function buildInjectionScript() {
-  // 这里包含所有必要的函数定义
-  // 由于代码长度限制，这里只展示结构
-  const scripts = [
-    // 配置和状态
-    `const WORKER_CONFIG = ${JSON.stringify(WORKER_CONFIG, null, 2)};`,
-    `const globalState = ${JSON.stringify(globalState, null, 2)};`,
-    
-    // 工具函数
-    deepClone.toString(),
-    deepMerge.toString(),
-    isObject.toString(),
-    generateId.toString(),
-    formatDateTime.toString(),
-    debounce.toString(),
-    throttle.toString(),
-    safeJsonParse.toString(),
-    safeJsonStringify.toString(),
-    validateEmail.toString(),
-    validateUrl.toString(),
-    validatePassword.toString(),
-    sanitizeData.toString(),
-    
-    // 存储管理器
-    storageManager.set.toString(),
-    storageManager.get.toString(),
-    storageManager.remove.toString(),
-    storageManager.clear.toString(),
-    storageManager.keys.toString(),
-    storageManager.getStats.toString(),
-    
-    // API管理器
-    ApiRequestManager.toString(),
-    `const apiManager = new ApiRequestManager();`,
-    
-    // 批处理器
-    BatchProcessor.toString(),
-    `const batchProcessor = new BatchProcessor();`,
-    
-    // 主题管理器
-    ThemeManager.toString(),
-    `const themeManager = new ThemeManager();`,
-    
-    // 事件系统
-    EventEmitter.toString(),
-    `const eventBus = new EventEmitter();`,
-    `const EVENTS = ${JSON.stringify(EVENTS, null, 2)};`,
-    
-    // UI注入函数
-    injectControlPanel.toString(),
-    
-    // 初始化代码
-    `
-      (function init() {
-        // 等待页面加载完成
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', () => {
-            setTimeout(injectControlPanel, 1000);
-          });
-        } else {
-          setTimeout(injectControlPanel, 1000);
-        }
+    for (let i = 0; i < count; i++) {
+      try {
+        console.log(`开始注册第 ${i + 1}/${count} 个帐号`);
         
-        // 初始化网络监控
-        if (typeof networkMonitor !== 'undefined') {
-          networkMonitor.init();
-        }
-        
-        // 初始化事件监听
-        window.addEventListener('beforeunload', () => {
-          eventBus.emit(EVENTS.SYSTEM_SHUTDOWN, { timestamp: Date.now() });
+        const clearResponse = await fetch(new URL("/_proxy/clear-cookies", request.url), {
+          method: "POST",
+          headers: request.headers
         });
         
-        console.log('Worker控制面板系统初始化完成');
-      })();
-    `,
-  ];
-  
-  return `<script>${scripts.join('\n\n')}</script>`;
-}
-
-/**
- * 将脚本注入到HTML中
- */
-function injectScriptIntoHtml(html, script) {
-  // 查找body标签
-  const bodyRegex = /<\/body>/i;
-  if (bodyRegex.test(html)) {
-    return html.replace(bodyRegex, `${script}</body>`);
-  }
-  
-  // 如果没有body标签，直接追加到末尾
-  return html + script;
-}
-
-/**
- * 记录请求日志
- */
-function logRequest(request, requestId) {
-  const logEntry = {
-    id: requestId,
-    method: request.method,
-    url: request.url,
-    headers: Object.fromEntries(request.headers.entries()),
-    timestamp: Date.now(),
-    cf: request.cf,
-  };
-  
-  // 添加到历史记录
-  globalState.history.apiCalls.push(logEntry);
-  
-  // 触发事件
-  eventBus.emit(EVENTS.API_REQUEST_START, {
-    requestId,
-    endpoint: new URL(request.url).pathname,
-    timestamp: Date.now(),
-  });
-}
-
-/**
- * 记录响应日志
- */
-function logResponse(requestId, response, duration) {
-  const logEntry = {
-    id: requestId,
-    status: response.status,
-    statusText: response.statusText,
-    duration,
-    timestamp: Date.now(),
-  };
-  
-  // 触发事件
-  if (response.status >= 200 && response.status < 300) {
-    eventBus.emit(EVENTS.API_REQUEST_SUCCESS, {
-      requestId,
-      duration,
-      timestamp: Date.now(),
-    });
-  } else {
-    eventBus.emit(EVENTS.API_REQUEST_ERROR, {
-      requestId,
-      error: `HTTP ${response.status}: ${response.statusText}`,
-      duration,
-      timestamp: Date.now(),
-    });
-  }
-}
-
-/**
- * 添加监控头
- */
-function addMonitoringHeaders(response, duration, requestId) {
-  const headers = new Headers(response.headers);
-  headers.set('X-Request-ID', requestId);
-  headers.set('X-Response-Time', `${duration}ms`);
-  headers.set('X-Worker-Version', `${WORKER_CONFIG.version.major}.${WORKER_CONFIG.version.minor}.${WORKER_CONFIG.version.patch}`);
-  
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-// ==================== 7. 辅助函数和工具 (200行) ====================
-// 由于代码长度限制，这里只列出函数声明
-// 实际每个函数都有完整实现
-
-// 7.1 健康检查函数
-async function checkApiHealth() { /* 实现 */ }
-async function checkDatabaseHealth() { /* 实现 */ }
-async function checkCacheHealth() { /* 实现 */ }
-async function checkMemoryHealth() { /* 实现 */ }
-
-// 7.2 API验证函数
-function validateApiRequest(request) { /* 实现 */ }
-
-// 7.3 API处理函数
-async function handleAccountsAPI(request, method) { /* 实现 */ }
-async function handleBatchAPI(request, method) { /* 实现 */ }
-async function handleSettingsAPI(request, method) { /* 实现 */ }
-async function handleMonitoringAPI(request, method) { /* 实现 */ }
-async function handleLogsAPI(request, method) { /* 实现 */ }
-
-// 7.4 数据操作函数
-async function fetchAccounts() { /* 实现 */ }
-async function createAccount(data) { /* 实现 */ }
-async function updateAccount(id, data) { /* 实现 */ }
-async function deleteAccount(id) { /* 实现 */ }
-
-// 7.5 批量操作函数
-async function processBatchRegistration(data) { /* 实现 */ }
-async function processBatchUpdate(data) { /* 实现 */ }
-async function processBatchDeletion(data) { /* 实现 */ }
-
-// 7.6 设置管理函数
-async function loadSettings() { /* 实现 */ }
-async function saveSettings(data) { /* 实现 */ }
-async function resetSettings() { /* 实现 */ }
-
-// 7.7 监控函数
-async function collectMetrics() { /* 实现 */ }
-async function generateReport() { /* 实现 */ }
-async function checkAlerts() { /* 实现 */ }
-
-// 7.8 日志函数
-async function writeLog(level, message, data) { /* 实现 */ }
-async function readLogs(filter) { /* 实现 */ }
-async function clearLogs() { /* 实现 */ }
-
-// 7.9 工具函数
-function formatBytes(bytes) { /* 实现 */ }
-function formatDuration(ms) { /* 实现 */ }
-function generatePassword(length) { /* 实现 */ }
-function generateApiKey() { /* 实现 */ }
-function validateToken(token) { /* 实现 */ }
-function encryptData(data) { /* 实现 */ }
-function decryptData(encrypted) { /* 实现 */ }
-
-// ==================== 8. 导出和模块定义 (50行) ====================
-// 导出所有主要函数，方便模块化使用
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    // 配置和状态
-    WORKER_CONFIG,
-    globalState,
-    
-    // 核心函数
-    handleRequest,
-    injectControlPanel,
-    
-    // 管理器
-    apiManager,
-    batchProcessor,
-    themeManager,
-    storageManager,
-    eventBus,
-    
-    // 工具函数
-    deepClone,
-    deepMerge,
-    generateId,
-    formatDateTime,
-    debounce,
-    throttle,
-    safeJsonParse,
-    safeJsonStringify,
-    validateEmail,
-    validateUrl,
-    validatePassword,
-    sanitizeData,
-    
-    // API函数
-    fetchAccounts,
-    createAccount,
-    updateAccount,
-    deleteAccount,
-    processBatchRegistration,
-    loadSettings,
-    saveSettings,
-    
-    // 监控函数
-    collectMetrics,
-    generateReport,
-    
-    // 工具函数
-    formatBytes,
-    formatDuration,
-    generatePassword,
-    generateApiKey,
-    
-    // 事件常量
-    EVENTS,
-  };
-}
-
-// 如果是全局环境，添加到window对象
-if (typeof window !== 'undefined') {
-  window.WorkerPanel = {
-    version: WORKER_CONFIG.version,
-    config: WORKER_CONFIG,
-    state: globalState,
-    inject: injectControlPanel,
-    api: apiManager,
-    batch: batchProcessor,
-    theme: themeManager,
-    storage: storageManager,
-    events: eventBus,
-    utils: {
-      deepClone,
-      deepMerge,
-      generateId,
-      formatDateTime,
-      validateEmail,
-      validateUrl,
-    },
-  };
-}
-
-// ==================== 9. 初始化代码 (50行) ====================
-// 自动初始化
-(function autoInit() {
-  // 记录启动时间
-  globalState.app.initialized = true;
-  globalState.app.startTime = Date.now();
-  
-  // 初始化事件系统
-  eventBus.emit(EVENTS.SYSTEM_STARTUP, {
-    timestamp: Date.now(),
-    version: WORKER_CONFIG.version,
-    config: WORKER_CONFIG,
-  });
-  
-  // 初始化性能监控
-  if (typeof performance !== 'undefined') {
-    performance.mark('worker-panel-init-start');
-  }
-  
-  // 初始化网络监控
-  if (typeof navigator !== 'undefined') {
-    try {
-      networkMonitor.init();
-    } catch (error) {
-      console.warn('网络监控初始化失败:', error);
+        if (!clearResponse.ok) {
+          errors.push({ index: i, error: "清除 Cookie 失败" });
+          continue;
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        const registerResponse = await fetch(new URL("/_proxy/get-account", request.url), {
+          method: "POST",
+          headers: request.headers
+        });
+        
+        if (!registerResponse.ok) {
+          const errorText = await registerResponse.text();
+          errors.push({ 
+            index: i, 
+            error: `注册失败: ${registerResponse.status}`,
+            details: errorText
+          });
+          continue;
+        }
+        
+        const registerData = await registerResponse.json();
+        
+        if (!registerData.success) {
+          errors.push({ 
+            index: i, 
+            error: "注册失败",
+            details: registerData.message 
+          });
+          continue;
+        }
+        
+        const saveResult = await saveAccountToDB(env, {
+          userId: registerData.userId,
+          cookies: registerData.cookies,
+          token: registerData.cookies["sb-rls-auth-token"] || "",
+          balance: registerData.balance || 35,
+          ipAddress: clientIP,
+          userAgent: userAgent
+        });
+        
+        if (saveResult.success) {
+          registeredCount++;
+          results.push({
+            index: i,
+            userId: registerData.userId,
+            balance: registerData.balance,
+            cookies: Object.keys(registerData.cookies),
+            timestamp: new Date().toISOString()
+          });
+          
+          console.log(`第 ${i + 1} 个帐号注册成功: ${registerData.userId}`);
+        } else {
+          errors.push({ 
+            index: i, 
+            error: "保存到数据库失败",
+            details: saveResult.error 
+          });
+        }
+        
+        if (autoRefresh && i < count - 1) {
+          await new Promise(resolve => setTimeout(resolve, refreshDelay));
+        }
+        
+      } catch (error) {
+        errors.push({ 
+          index: i, 
+          error: "注册过程中异常",
+          details: error.message 
+        });
+        console.error(`第 ${i + 1} 个帐号注册异常:`, error);
+      }
     }
+    
+    return new Response(JSON.stringify({
+      success: true,
+      message: `批量注册完成，成功 ${registeredCount}/${count}`,
+      total: count,
+      registered: registeredCount,
+      failed: errors.length,
+      results: results,
+      errors: errors,
+      timestamp: new Date().toISOString()
+    }), {
+      headers: { 
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      }
+    });
+    
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      message: "批量注册请求处理失败",
+      error: error.message
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
-  
-  // 加载保存的设置
+}
+__name(handleBatchRegister, "handleBatchRegister");
+
+async function handleEnvironmentCheck(request, targetUrl) {
   try {
-    const savedSettings = storageManager.get('settings');
-    if (savedSettings) {
-      deepMerge(globalState.settings.current, savedSettings);
-      console.log('已加载保存的设置');
+    const checkResults = [];
+    
+    try {
+      const tokenResponse = await fetch(`${targetUrl}/api/auth/token`, {
+        method: "GET",
+        headers: {
+          "User-Agent": request.headers.get("user-agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "*/*",
+          "Referer": targetUrl
+        }
+      });
+      
+      checkResults.push({
+        endpoint: "/api/auth/token",
+        status: tokenResponse.status,
+        statusText: tokenResponse.statusText,
+        ok: tokenResponse.ok,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      checkResults.push({
+        endpoint: "/api/auth/token",
+        status: 0,
+        statusText: "请求失败",
+        ok: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    try {
+      const signinResponse = await fetch(`${targetUrl}/api/auth/anonymous-sign-in`, {
+        method: "POST",
+        headers: {
+          "User-Agent": request.headers.get("user-agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "*/*",
+          "Content-Type": "application/json",
+          "Referer": targetUrl,
+          "Origin": targetUrl
+        },
+        body: JSON.stringify({
+          code: "test_environment_check",
+          id: "test-" + Date.now(),
+          email: `test-${Date.now()}@anon.com`,
+          fp: { data: {}, hash: "test" }
+        })
+      });
+      
+      checkResults.push({
+        endpoint: "/api/auth/anonymous-sign-in",
+        status: signinResponse.status,
+        statusText: signinResponse.statusText,
+        ok: signinResponse.ok,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      checkResults.push({
+        endpoint: "/api/auth/anonymous-sign-in",
+        status: 0,
+        statusText: "请求失败",
+        ok: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const allOk = checkResults.every(r => r.ok);
+    const has401 = checkResults.some(r => r.status === 401);
+    const has429 = checkResults.some(r => r.status === 429);
+    
+    let status = "normal";
+    let message = "环境正常";
+    
+    if (has429) {
+      status = "rate_limited";
+      message = "环境异常：接口限流 (429 Too Many Requests)";
+    } else if (has401) {
+      status = "auth_required";
+      message = "环境正常：需要身份验证 (401 Unauthorized)";
+    } else if (!allOk) {
+      status = "abnormal";
+      message = "环境异常：部分接口不可用";
+    }
+    
+    return new Response(JSON.stringify({
+      success: true,
+      status: status,
+      message: message,
+      environment: "检测完成",
+      results: checkResults,
+      timestamp: new Date().toISOString(),
+      note: "基于您提供的抓包记录检测：401为正常认证要求，429为限流，其他非200状态可能表示环境异常"
+    }), {
+      headers: { 
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      }
+    });
+    
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      status: "error",
+      message: "环境检查失败",
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+}
+__name(handleEnvironmentCheck, "handleEnvironmentCheck");
+
+async function handleAccountManagement(request, env) {
+  try {
+    const url = new URL(request.url);
+    const action = url.searchParams.get("action") || "list";
+    
+    switch (action) {
+      case "list": {
+        const limit = parseInt(url.searchParams.get("limit") || "100");
+        const result = await getAccountsFromDB(env, limit);
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      
+      case "delete": {
+        const userId = url.searchParams.get("user_id");
+        if (!userId) {
+          return new Response(JSON.stringify({
+            success: false,
+            message: "缺少 user_id 参数"
+          }), { status: 400 });
+        }
+        
+        const result = await deleteAccountFromDB(env, userId);
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      
+      case "upload": {
+        const clientCookies = parseCookies(request.headers.get("cookie") || "");
+        const userId = clientCookies["_rid"] || `upload-${Date.now()}`;
+        
+        if (Object.keys(clientCookies).length === 0) {
+          return new Response(JSON.stringify({
+            success: false,
+            message: "没有可上传的 Cookie"
+          }), { status: 400 });
+        }
+        
+        const result = await saveAccountToDB(env, {
+          userId: userId,
+          cookies: clientCookies,
+          token: clientCookies["sb-rls-auth-token"] || "",
+          balance: 35,
+          ipAddress: request.headers.get("CF-Connecting-IP") || "unknown",
+          userAgent: request.headers.get("user-agent") || ""
+        });
+        
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      
+      default:
+        return new Response(JSON.stringify({
+          success: false,
+          message: "未知的操作类型",
+          available_actions: ["list", "delete", "upload"]
+        }), { status: 400 });
     }
   } catch (error) {
-    console.warn('加载设置失败:', error);
+    return new Response(JSON.stringify({
+      success: false,
+      message: "帐号管理操作失败",
+      error: error.message
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
-  
-  // 标记初始化完成
-  if (typeof performance !== 'undefined') {
-    performance.mark('worker-panel-init-end');
-    performance.measure('worker-panel-init', 'worker-panel-init-start', 'worker-panel-init-end');
-  }
-  
-  console.log(`Worker控制面板系统 v${WORKER_CONFIG.version.major}.${WORKER_CONFIG.version.minor}.${WORKER_CONFIG.version.patch} 初始化完成`);
-})();
+}
+__name(handleAccountManagement, "handleAccountManagement");
 
-// ==================== 文件结束 ====================
+async function handleClearCookies(request) {
+  try {
+    const setCookieHeaders = COOKIES_TO_CLEAR.map((cookie) => {
+      return `${cookie}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure; Max-Age=0`;
+    });
+    
+    const additionalCookies = COOKIES_TO_CLEAR.map((cookie) => {
+      return `${cookie}=; Path=/; Domain=.xn--i8s951di30azba.com; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure; Max-Age=0`;
+    });
+    
+    const allHeaders = [...setCookieHeaders, ...additionalCookies];
+    
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: `已清除 ${COOKIES_TO_CLEAR.length} 个 Cookie`,
+      clearedCookies: COOKIES_TO_CLEAR
+    }), {
+      headers: { 
+        "Content-Type": "application/json", 
+        "Set-Cookie": allHeaders.join(", ") 
+      }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ 
+      success: false, 
+      message: "清除 Cookie 失败",
+      error: error.message 
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+}
+__name(handleClearCookies, "handleClearCookies");
+
+async function handleCheckStatus(request, targetUrl) {
+  try {
+    const clientCookies = parseCookies(request.headers.get("cookie") || "");
+    const hasAuth = "sb-rls-auth-token" in clientCookies;
+    
+    let balance = 0;
+    let userInfo = null;
+    let quotaInfo = null;
+    
+    if (hasAuth) {
+      try {
+        const meResponse = await fetch(targetUrl + "/api/me", {
+          headers: {
+            "Cookie": request.headers.get("cookie") || ""
+          }
+        });
+        
+        if (meResponse.ok) {
+          const meData = await meResponse.json();
+          balance = meData.credit || 0;
+          userInfo = {
+            id: meData.id,
+            email: meData.email,
+            createdAt: meData.created_at
+          };
+        }
+        
+        const quotaResponse = await fetch(targetUrl + "/api/quota", {
+          headers: {
+            "Cookie": request.headers.get("cookie") || ""
+          }
+        });
+        
+        if (quotaResponse.ok) {
+          quotaInfo = await quotaResponse.json();
+        }
+      } catch (error) {
+        console.warn("获取用户信息失败:", error);
+      }
+    }
+    
+    const interfaceStatus = {
+      token: { checked: false, status: null, message: "" },
+      signin: { checked: false, status: null, message: "" }
+    };
+    
+    try {
+      const tokenCheck = await fetch(targetUrl + "/api/auth/token", {
+        method: "HEAD"
+      });
+      interfaceStatus.token = {
+        checked: true,
+        status: tokenCheck.status,
+        ok: tokenCheck.ok,
+        message: tokenCheck.statusText
+      };
+    } catch (error) {
+      interfaceStatus.token.message = error.message;
+    }
+    
+    return new Response(JSON.stringify({
+      authenticated: hasAuth,
+      userId: clientCookies["_rid"] || null,
+      cookies: Object.keys(clientCookies),
+      balance: balance,
+      userInfo: userInfo,
+      quotaInfo: quotaInfo,
+      interfaceStatus: interfaceStatus,
+      timestamp: new Date().toISOString(),
+      recommendations: !hasAuth ? [
+        "当前未检测到有效 Cookie",
+        "点击「获取新帐号」按钮创建游客帐号",
+        "或手动注入有效 Cookie"
+      ] : [
+        `当前余额: ${balance} 次免费额度`,
+        "Cookie 有效，可以正常使用聊天功能"
+      ]
+    }), {
+      headers: { 
+        "Content-Type": "application/json", 
+        "Access-Control-Allow-Origin": "*" 
+      }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ 
+      error: "状态检查失败", 
+      message: error.message,
+      timestamp: new Date().toISOString()
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+}
+__name(handleCheckStatus, "handleCheckStatus");
+
+async function handleProxyRequest(request, targetUrl, url) {
+  const targetHeaders = new Headers(request.headers);
+  targetHeaders.delete("host");
+  targetHeaders.delete("origin");
+  targetHeaders.delete("referer");
+  targetHeaders.set("origin", targetUrl);
+  targetHeaders.set("referer", targetUrl + url.pathname);
+  const targetRequest = new Request(targetUrl + url.pathname + url.search, {
+    method: request.method,
+    headers: targetHeaders,
+    body: request.body,
+    redirect: "manual"
+  });
+  const response = await fetch(targetRequest);
+  return await processProxyResponse(response, request, url);
+}
+__name(handleProxyRequest, "handleProxyRequest");
+
+async function processProxyResponse(response, originalRequest, url) {
+  const contentType = response.headers.get("content-type") || "";
+  const clonedResponse = response.clone();
+  if (contentType.includes("text/html")) {
+    try {
+      const html = await clonedResponse.text();
+      const modifiedHtml = injectControlPanel(html, url);
+      const newHeaders2 = new Headers(response.headers);
+      newHeaders2.set("Content-Type", "text/html; charset=utf-8");
+      return new Response(modifiedHtml, {
+        status: response.status,
+        headers: newHeaders2
+      });
+    } catch (error) {
+      console.error("HTML注入失败:", error);
+      return response;
+    }
+  }
+  const newHeaders = new Headers(response.headers);
+  newHeaders.set("Access-Control-Allow-Origin", "*");
+  newHeaders.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  newHeaders.set("Access-Control-Allow-Headers", "*");
+  newHeaders.set("Access-Control-Allow-Credentials", "true");
+  newHeaders.delete("content-security-policy");
+  newHeaders.delete("content-security-policy-report-only");
+  return new Response(response.body, {
+    status: response.status,
+    headers: newHeaders
+  });
+}
+__name(processProxyResponse, "processProxyResponse");
+
+async function handleGetAccount(request, targetUrl) {
+  try {
+    const homeHeaders = {
+      "User-Agent": request.headers.get("user-agent") || "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Connection": "keep-alive",
+      "Upgrade-Insecure-Requests": "1"
+    };
+    const homeResp = await fetch(targetUrl, {
+      headers: homeHeaders
+    });
+    if (!homeResp.ok) {
+      throw new Error(`首页请求失败: ${homeResp.status}`);
+    }
+    const html = await homeResp.text();
+    const codeMatch = html.match(/"code":"([^"]+)"/);
+    if (!codeMatch) {
+      throw new Error("无法从首页提取 code");
+    }
+    const code = codeMatch[1];
+    console.log("Extracted code:", code);
+    const userId = generateUUID();
+    const email = `${userId}@anon.com`;
+    const fp = {
+      data: {
+        audio: {
+          sampleHash: Math.random() * 2e3,
+          oscillator: "sine",
+          maxChannels: 1,
+          channelCountMode: "max"
+        },
+        canvas: {
+          commonImageDataHash: "8965585f0983dad03f7382c986d7aee5"
+        },
+        fonts: {
+          Arial: 340.3125,
+          Courier: 435.9375,
+          "Courier New": 435.9375,
+          Helvetica: 340.3125,
+          Tahoma: 340.3125,
+          Verdana: 340.3125
+        },
+        hardware: {
+          videocard: {
+            vendor: "WebKit",
+            renderer: "WebKit WebGL",
+            version: "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+            shadingLanguageVersion: "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"
+          },
+          architecture: 127,
+          deviceMemory: "4",
+          jsHeapSizeLimit: 113e7
+        },
+        locales: {
+          languages: "zh-CN",
+          timezone: "Asia/Shanghai"
+        },
+        permissions: {
+          accelerometer: "granted",
+          "background-fetch": "denied",
+          "background-sync": "denied",
+          camera: "prompt",
+          "clipboard-read": "denied",
+          "clipboard-write": "granted",
+          "display-capture": "denied",
+          gyroscope: "granted",
+          geolocation: "prompt",
+          magnetometer: "granted",
+          microphone: "prompt",
+          midi: "granted",
+          nfc: "denied",
+          notifications: "denied",
+          "payment-handler": "denied",
+          "persistent-storage": "denied",
+          "storage-access": "denied",
+          "window-management": "denied"
+        },
+        plugins: { plugins: [] },
+        screen: {
+          is_touchscreen: true,
+          maxTouchPoints: 5,
+          colorDepth: 24,
+          mediaMatches: [
+            "prefers-contrast: no-preference",
+            "any-hover: none",
+            "any-pointer: coarse",
+            "pointer: coarse",
+            "hover: none",
+            "update: fast",
+            "prefers-reduced-motion: no-preference",
+            "prefers-reduced-transparency: no-preference",
+            "scripting: enabled",
+            "forced-colors: none"
+          ]
+        },
+        system: {
+          platform: "Linux aarch64",
+          cookieEnabled: true,
+          productSub: "20030107",
+          product: "Gecko",
+          useragent: request.headers.get("user-agent") || "Mozilla/5.0 (Linux; Android 10; PBEM00 Build/QKQ1.190918.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7681.2 Mobile Safari/537.36",
+          hardwareConcurrency: 8,
+          browser: { name: "Chrome", version: "147.0" },
+          applePayVersion: 0
+        },
+        webgl: {
+          commonImageHash: "1d62a570a8e39a3cc4458b2efd47b6a2"
+        },
+        math: {
+          acos: 1.0471975511965979,
+          asin: -9614302481290016e-32,
+          atan: 4578239276804769e-32,
+          cos: -4854249971455313e-31,
+          cosh: 1.9468519159297506,
+          e: 2.718281828459045,
+          largeCos: 0.7639704044417283,
+          largeSin: -0.6452512852657808,
+          largeTan: -0.8446024630198843,
+          log: 6.907755278982137,
+          pi: 3.141592653589793,
+          sin: -19461946644816207e-32,
+          sinh: -0.6288121810679035,
+          sqrt: 1.4142135623730951,
+          tan: 6980860926542689e-29,
+          tanh: -0.39008295789884684
+        }
+      },
+      hash: "77f81202fa12f86b7f77af693c55bf08"
+    };
+    const requestBody = {
+      code,
+      id: userId,
+      email,
+      fp
+    };
+    const requestId = Math.random().toString(36).substring(2, 10);
+    const headers = {
+      "Content-Type": "application/json",
+      "User-Agent": request.headers.get("user-agent") || "Mozilla/5.0 (Linux; Android 10; PBEM00 Build/QKQ1.190918.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7681.2 Mobile Safari/537.36",
+      "Accept": "*/*",
+      "Origin": targetUrl,
+      "Referer": targetUrl + "/",
+      "x-dzmm-request-id": requestId,
+      "sec-ch-ua": '"Not.A/Brand";v="8", "Chromium";v="147"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+      "x-requested-with": "mark.via"
+    };
+    const clientCookies = parseCookies(request.headers.get("cookie") || "");
+    const phCookie = clientCookies["ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog"];
+    if (phCookie) {
+      headers["Cookie"] = `ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog=${phCookie}`;
+    }
+    let response;
+    let retries = 3;
+    while (retries-- > 0) {
+      response = await fetch(targetUrl + "/api/auth/anonymous-sign-in", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody)
+      });
+      if (response.status !== 429) break;
+      await new Promise((resolve) => setTimeout(resolve, 1e3));
+    }
+    if (!response || !response.ok) {
+      const errorText = response ? await response.text() : "无响应";
+      throw new Error(`API返回 ${response?.status || "未知"}: ${errorText}`);
+    }
+    const responseText = await response.text();
+    console.log(`API Response Status: ${response.status}, Body: ${responseText}`);
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (e) {
+      throw new Error("API返回的不是有效JSON");
+    }
+    const setCookieHeader = response.headers.get("set-cookie");
+    const cookies = parseSetCookies(setCookieHeader);
+    if (!cookies["_rid"]) cookies["_rid"] = data.id || userId;
+    if (!cookies["chosen_language"]) cookies["chosen_language"] = "zh-CN";
+    if (!cookies["invite_code"]) cookies["invite_code"] = "-";
+    return new Response(JSON.stringify({
+      success: true,
+      message: "游客账户创建成功",
+      cookies,
+      userId: cookies["_rid"] || data.id,
+      balance: 35,
+      expiresAt: new Date(Date.now() + 3600 * 1e3).toISOString(),
+      note: "通过纯动态流程注册，拥有35次免费额度。"
+    }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Set-Cookie": Object.entries(cookies).map(([name, value]) => `${name}=${value}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=31536000`).join(", ")
+      }
+    });
+  } catch (error) {
+    console.error(`Error in handleGetAccount: ${error.message}`);
+    return new Response(JSON.stringify({
+      success: false,
+      message: `创建账户失败: ${error.message}`,
+      suggestion: "无法从页面提取code，尝试暗地操作"
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+}
+__name(handleGetAccount, "handleGetAccount");
+
+async function handleInjectCookie(request) {
+  try {
+    const body = await request.json();
+    const cookies = body.cookies;
+    if (!cookies || typeof cookies !== "object") throw new Error("无效的Cookie数据");
+    const setCookieHeaders = Object.entries(cookies).map(
+      ([name, value]) => `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=31536000`
+    );
+    return new Response(JSON.stringify({ success: true }), {
+      headers: { "Content-Type": "application/json", "Set-Cookie": setCookieHeaders.join(", ") }
+    });
+  } catch (e) {
+    return new Response(JSON.stringify({ success: false, message: e.message }), { status: 400 });
+  }
+}
+__name(handleInjectCookie, "handleInjectCookie");
+
+function generateUUID() {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    return (c === "x" ? r : r & 3 | 8).toString(16);
+  });
+}
+__name(generateUUID, "generateUUID");
+
+// ==================== iOS毛玻璃控制面板注入（修复版：使用双引号避免语法错误）====================
+function injectControlPanel(html, url) {
+  // 整个 panelHTML 使用双引号拼接，内部所有双引号已转义为 \"
+  const panelHTML = 
+  "<div id=\"xc-panel-wrapper\" style=\"position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2147483647; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;\">" +
+    "<!-- 中上角功能按钮 -->" +
+    "<div id=\"xc-toggle-btn\" style=\"position: fixed; top: 15px; left: 50%; transform: translateX(-50%); pointer-events: auto; z-index: 10000; opacity: 0; transition: opacity 0.5s ease;\">" +
+      "<button onclick=\"toggleControlPanel()\" style=\"background: rgba(255, 255, 255, 0.25); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 20px; padding: 10px 20px; color: white; font-weight: 600; font-size: 14px; cursor: pointer; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2); transition: all 0.3s ease;\">🎛️ 控制中心</button>" +
+    "</div>" +
+
+    "<!-- 主控制面板 -->" +
+    "<div id=\"xc-main-panel\" style=\"position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0.9); width: 90%; max-width: 400px; max-height: 80vh; overflow-y: auto; background: rgba(255, 255, 255, 0.15); backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 24px; padding: 24px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1) inset; pointer-events: auto; opacity: 0; visibility: hidden; transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); z-index: 9999;\">" +
+      "<!-- 关闭按钮 -->" +
+      "<div style=\"text-align: right; margin-bottom: 20px;\">" +
+        "<button onclick=\"closeControlPanel()\" style=\"background: rgba(255, 255, 255, 0.2); border: none; border-radius: 50%; width: 36px; height: 36px; color: white; font-size: 18px; cursor: pointer; transition: all 0.2s ease;\">×</button>" +
+      "</div>" +
+
+      "<!-- 面板标题 -->" +
+      "<h2 style=\"color: white; margin: 0 0 20px 0; font-size: 24px; font-weight: 700; text-align: center; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);\">🎮 电子魅魔控制中心</h2>" +
+
+      "<!-- 环境状态信息 -->" +
+      "<div id=\"xc-env-status\" style=\"background: rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 16px; margin-bottom: 16px;\">" +
+        "<h3 style=\"color: white; margin: 0 0 12px 0; font-size: 16px;\">🌍 环境状态</h3>" +
+        "<div id=\"xc-env-content\" style=\"color: rgba(255, 255, 255, 0.9); font-size: 14px;\">🕐 检测中...</div>" +
+      "</div>" +
+
+      "<!-- 帐号状态信息 -->" +
+      "<div id=\"xc-acc-status\" style=\"background: rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 16px; margin-bottom: 16px;\">" +
+        "<h3 style=\"color: white; margin: 0 0 12px 0; font-size: 16px;\">📊 帐号状态</h3>" +
+        "<div id=\"xc-acc-content\" style=\"color: rgba(255, 255, 255, 0.9); font-size: 14px;\">⏳ 检测中...</div>" +
+      "</div>" +
+
+      "<!-- 功能按钮组 -->" +
+      "<div style=\"display: grid; gap: 12px; margin-bottom: 20px;\">" +
+        "<button onclick=\"checkStatus()\" style=\"background: linear-gradient(135deg, rgba(10, 132, 255, 0.8), rgba(0, 122, 255, 0.8)); border: none; border-radius: 14px; padding: 16px; color: white; font-weight: 600; font-size: 16px; cursor: pointer; transition: all 0.3s ease;\">🔍 检查状态</button>" +
+        "<button onclick=\"getNewAccount()\" style=\"background: linear-gradient(135deg, rgba(52, 199, 89, 0.8), rgba(48, 209, 88, 0.8)); border: none; border-radius: 14px; padding: 16px; color: white; font-weight: 600; font-size: 16px; cursor: pointer; transition: all 0.3s ease;\">🆕 获取新帐号</button>" +
+        "<button onclick=\"showBatchRegister()\" style=\"background: linear-gradient(135deg, rgba(255, 159, 10, 0.8), rgba(255, 149, 0, 0.8)); border: none; border-radius: 14px; padding: 16px; color: white; font-weight: 600; font-size: 16px; cursor: pointer; transition: all 0.3s ease;\">🔄 批量注册</button>" +
+        "<button onclick=\"checkEnvironment()\" style=\"background: linear-gradient(135deg, rgba(175, 82, 222, 0.8), rgba(191, 90, 242, 0.8)); border: none; border-radius: 14px; padding: 16px; color: white; font-weight: 600; font-size: 16px; cursor: pointer; transition: all 0.3s ease;\">🔧 环境检查</button>" +
+        "<button onclick=\"manageAccounts()\" style=\"background: linear-gradient(135deg, rgba(255, 69, 58, 0.8), rgba(255, 59, 48, 0.8)); border: none; border-radius: 14px; padding: 16px; color: white; font-weight: 600; font-size: 16px; cursor: pointer; transition: all 0.3s ease;\">📋 帐号管理</button>" +
+      "</div>" +
+
+      "<!-- 高级功能 -->" +
+      "<details style=\"background: rgba(255, 255, 255, 0.05); border-radius: 14px; padding: 12px; margin-bottom: 16px;\">" +
+        "<summary style=\"color: white; font-weight: 600; cursor: pointer;\">⚙️ 高级功能</summary>" +
+        "<div style=\"margin-top: 12px; display: grid; gap: 8px;\">" +
+          "<button onclick=\"injectCookie()\" style=\"background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 10px; padding: 10px; color: white; font-size: 14px; cursor: pointer;\">🍪 注入Cookie</button>" +
+          "<button onclick=\"clearCookies()\" style=\"background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 10px; padding: 10px; color: white; font-size: 14px; cursor: pointer;\">🗑️ 清除Cookie</button>" +
+          "<button onclick=\"uploadCurrentCookie()\" style=\"background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 10px; padding: 10px; color: white; font-size: 14px; cursor: pointer;\">📤 上传当前Cookie</button>" +
+          "<button onclick=\"showInterfaceMonitor()\" style=\"background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 10px; padding: 10px; color: white; font-size: 14px; cursor: pointer;\">📡 接口监控</button>" +
+        "</div>" +
+      "</details>" +
+
+      "<!-- 底部信息 -->" +
+      "<div style=\"text-align: center; color: rgba(255, 255, 255, 0.6); font-size: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, 0.1);\">" +
+        "<div>🎯 默认密码: 1591156135qwzxcv</div>" +
+        "<div>💎 新用户额度: 35元/次</div>" +
+        "<div>🕐 面板将在 3 秒后显示</div>" +
+      "</div>" +
+    "</div>" +
+
+    "<!-- iOS灵动岛通知 -->" +
+    "<div id=\"xc-notification\" style=\"position: fixed; top: 20px; right: 20px; max-width: 300px; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-radius: 18px; padding: 14px 18px; color: white; font-size: 14px; pointer-events: auto; transform: translateY(-100px); opacity: 0; transition: all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); z-index: 10001; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); display: none;\">" +
+      "<div style=\"display: flex; align-items: center; gap: 10px;\">" +
+        "<div id=\"xc-notification-icon\" style=\"font-size: 18px;\">💡</div>" +
+        "<div style=\"flex: 1;\">" +
+          "<div id=\"xc-notification-title\" style=\"font-weight: 600; margin-bottom: 4px;\">通知标题</div>" +
+          "<div id=\"xc-notification-message\" style=\"opacity: 0.9;\">通知内容</div>" +
+        "</div>" +
+        "<button onclick=\"closeNotification()\" style=\"background: none; border: none; color: rgba(255, 255, 255, 0.7); font-size: 20px; cursor: pointer; padding: 0; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;\">×</button>" +
+      "</div>" +
+    "</div>" +
+
+    "<!-- 批量注册悬浮窗 -->" +
+    "<div id=\"xc-batch-modal\" style=\"position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 350px; background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px); border-radius: 24px; padding: 24px; color: white; pointer-events: auto; z-index: 10002; display: none; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.15);\">" +
+      "<h3 style=\"margin: 0 0 20px 0; text-align: center;\">🔄 批量注册设置</h3>" +
+
+      "<div style=\"margin-bottom: 16px;\">" +
+        "<label style=\"display: block; margin-bottom: 8px; opacity: 0.9;\">注册数量</label>" +
+        "<input type=\"number\" id=\"xc-batch-count\" value=\"5\" min=\"1\" max=\"100\" style=\"width: 100%; padding: 12px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.2); background: rgba(255, 255, 255, 0.1); color: white; font-size: 16px; box-sizing: border-box;\">" +
+      "</div>" +
+
+      "<div style=\"margin-bottom: 16px;\">" +
+        "<label style=\"display: block; margin-bottom: 8px; opacity: 0.9;\">刷新延迟 (毫秒)</label>" +
+        "<input type=\"number\" id=\"xc-refresh-delay\" value=\"3000\" min=\"1000\" max=\"10000\" style=\"width: 100%; padding: 12px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.2); background: rgba(255, 255, 255, 0.1); color: white; font-size: 16px; box-sizing: border-box;\">" +
+      "</div>" +
+
+      "<div style=\"display: flex; gap: 12px; margin-top: 24px;\">" +
+        "<button onclick=\"startBatchRegister()\" style=\"flex: 1; background: linear-gradient(135deg, #34c759, #30d158); border: none; border-radius: 12px; padding: 14px; color: white; font-weight: 600; cursor: pointer;\">开始注册</button>" +
+        "<button onclick=\"closeBatchModal()\" style=\"flex: 1; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 12px; padding: 14px; color: white; font-weight: 600; cursor: pointer;\">取消</button>" +
+      "</div>" +
+
+      "<div id=\"xc-batch-progress\" style=\"margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1); display: none;\">" +
+        "<div style=\"display: flex; justify-content: space-between; margin-bottom: 8px;\"><span>进度</span><span id=\"xc-batch-progress-text\">0/0</span></div>" +
+        "<div style=\"height: 6px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden;\"><div id=\"xc-batch-progress-bar\" style=\"height: 100%; width: 0%; background: linear-gradient(90deg, #34c759, #30d158); transition: width 0.3s ease;\"></div></div>" +
+        "<div style=\"text-align: center; margin-top: 12px;\"><button onclick=\"cancelBatchRegister()\" style=\"background: rgba(255, 59, 48, 0.8); border: none; border-radius: 10px; padding: 8px 16px; color: white; font-size: 14px; cursor: pointer;\">取消注册</button></div>" +
+      "</div>" +
+    "</div>" +
+
+    "<!-- 接口监控面板 -->" +
+    "<div id=\"xc-interface-monitor\" style=\"position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 400px; background: rgba(0, 0, 0, 0.9); backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px); border-radius: 24px; padding: 24px; color: white; pointer-events: auto; z-index: 10003; display: none; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.2);\">" +
+      "<h3 style=\"margin: 0 0 20px 0; text-align: center;\">📡 接口监控</h3>" +
+
+      "<div style=\"margin-bottom: 20px;\">" +
+        "<div style=\"display: flex; justify-content: space-between; margin-bottom: 12px;\"><span>接口</span><span>状态</span></div>" +
+        "<div id=\"xc-interface-list\" style=\"background: rgba(255, 255, 255, 0.1); border-radius: 12px; padding: 12px; max-height: 200px; overflow-y: auto;\">" +
+          "<div style=\"color: rgba(255, 255, 255, 0.7); text-align: center; padding: 20px;\">等待监控数据...</div>" +
+        "</div>" +
+      "</div>" +
+
+      "<div style=\"text-align: center;\"><button onclick=\"closeInterfaceMonitor()\" style=\"background: linear-gradient(135deg, #ff3b30, #ff453a); border: none; border-radius: 12px; padding: 12px 24px; color: white; font-weight: 600; cursor: pointer;\">关闭</button></div>" +
+    "</div>" +
+  "</div>" +
+
+  "<script>" +
+  "// 全局变量" +
+  "let currentBatchProcess = null;" +
+  "let notificationTimeout = null;" +
+  "let interfaceMonitorData = {" +
+    "'/api/auth/token': { lastStatus: null, lastTime: null, count: 0 }," +
+    "'/api/auth/anonymous-sign-in': { lastStatus: null, lastTime: null, count: 0 }" +
+  "};" +
+
+  "// 页面加载完成后初始化" +
+  "document.addEventListener('DOMContentLoaded', function() {" +
+    "// 延迟3秒后显示控制面板按钮" +
+    "setTimeout(() => {" +
+      "const btn = document.getElementById('xc-toggle-btn');" +
+      "btn.style.opacity = '1';" +
+
+      "// 显示欢迎通知" +
+      "showNotification('🎉 控制面板已就绪', '页面加载完成，点击顶部按钮打开控制面板', 'info');" +
+
+      "// 自动检查环境状态" +
+      "autoCheckEnvironment();" +
+
+      "// 自动检查帐号状态" +
+      "setTimeout(checkStatus, 1000);" +
+    "}, 3000);" +
+
+    "// 监听网络请求（监控关键接口）" +
+    "const originalFetch = window.fetch;" +
+    "window.fetch = function(...args) {" +
+      "const url = typeof args[0] === 'string' ? args[0] : args[0].url;" +
+
+      "// 监控关键接口" +
+      "if (url && (url.includes('/api/auth/token') || url.includes('/api/auth/anonymous-sign-in'))) {" +
+        "const startTime = Date.now();" +
+        "const endpoint = url.includes('/api/auth/token') ? '/api/auth/token' : '/api/auth/anonymous-sign-in';" +
+
+        "return originalFetch.apply(this, args).then(response => {" +
+          "// 记录接口状态" +
+          "const endTime = Date.now();" +
+          "const duration = endTime - startTime;" +
+
+          "if (!interfaceMonitorData[endpoint]) {" +
+            "interfaceMonitorData[endpoint] = { lastStatus: null, lastTime: null, count: 0 };" +
+          "}" +
+
+          "interfaceMonitorData[endpoint].lastStatus = response.status;" +
+          "interfaceMonitorData[endpoint].lastTime = new Date().toLocaleTimeString();" +
+          "interfaceMonitorData[endpoint].count++;" +
+
+          "// 更新环境状态显示（如果面板已打开）" +
+          "updateEnvironmentStatus();" +
+
+          "if (!response.ok) {" +
+            "showNotification('⚠️ 接口异常', endpoint + ' 返回 ' + response.status, 'warning');" +
+          "}" +
+
+          "return response;" +
+        "}).catch(error => {" +
+          "const endPoint = url.includes('/api/auth/token') ? '/api/auth/token' : '/api/auth/anonymous-sign-in';" +
+          "if (!interfaceMonitorData[endPoint]) {" +
+            "interfaceMonitorData[endPoint] = { lastStatus: null, lastTime: null, count: 0 };" +
+          "}" +
+          "interfaceMonitorData[endPoint].lastStatus = 'error';" +
+          "interfaceMonitorData[endPoint].lastTime = new Date().toLocaleTimeString();" +
+          "interfaceMonitorData[endPoint].count++;" +
+          "updateEnvironmentStatus();" +
+          "return Promise.reject(error);" +
+        "});" +
+      "}" +
+
+      "return originalFetch.apply(this, args);" +
+    "};" +
+  "});" +
+
+  "// 显示iOS风格通知" +
+  "function showNotification(title, message, type = 'info') {" +
+    "const notification = document.getElementById('xc-notification');" +
+    "const iconMap = {" +
+      "info: '💡'," +
+      "success: '✅'," +
+      "warning: '⚠️'," +
+      "error: '❌'," +
+      "loading: '⏳'" +
+    "};" +
+
+    "document.getElementById('xc-notification-icon').textContent = iconMap[type] || '💡';" +
+    "document.getElementById('xc-notification-title').textContent = title;" +
+    "document.getElementById('xc-notification-message').textContent = message;" +
+
+    "notification.style.display = 'block';" +
+    "setTimeout(() => {" +
+      "notification.style.transform = 'translateY(0)';" +
+      "notification.style.opacity = '1';" +
+    "}, 10);" +
+
+    "// 自动关闭通知" +
+    "if (notificationTimeout) clearTimeout(notificationTimeout);" +
+    "notificationTimeout = setTimeout(closeNotification, 5000);" +
+  "}" +
+
+  "function closeNotification() {" +
+    "const notification = document.getElementById('xc-notification');" +
+    "notification.style.transform = 'translateY(-100px)';" +
+    "notification.style.opacity = '0';" +
+    "setTimeout(() => {" +
+      "notification.style.display = 'none';" +
+    "}, 500);" +
+  "}" +
+
+  "// 控制面板显示/隐藏" +
+  "function toggleControlPanel() {" +
+    "const panel = document.getElementById('xc-main-panel');" +
+    "const isVisible = panel.style.visibility === 'visible';" +
+
+    "if (isVisible) {" +
+      "closeControlPanel();" +
+    "} else {" +
+      "panel.style.visibility = 'visible';" +
+      "panel.style.opacity = '1';" +
+      "panel.style.transform = 'translate(-50%, -50%) scale(1)';" +
+      "showNotification('📱 控制面板', '面板已打开', 'info');" +
+    "}" +
+  "}" +
+
+  "function closeControlPanel() {" +
+    "const panel = document.getElementById('xc-main-panel');" +
+    "panel.style.opacity = '0';" +
+    "panel.style.transform = 'translate(-50%, -50%) scale(0.9)';" +
+    "setTimeout(() => {" +
+      "panel.style.visibility = 'hidden';" +
+    "}, 400);" +
+  "}" +
+
+  "// 自动检查环境状态" +
+  "function autoCheckEnvironment() {" +
+    "fetch('/_proxy/environment-check')" +
+      ".then(response => response.json())" +
+      ".then(data => {" +
+        "let statusText = '';" +
+        "let statusColor = '#34c759';" +
+
+        "if (data.status === 'normal' || data.status === 'auth_required') {" +
+          "statusText = '🌍 环境正常 (' + (data.status === 'auth_required' ? '需认证' : '正常') + ')';" +
+          "statusColor = '#34c759';" +
+        "} else if (data.status === 'rate_limited') {" +
+          "statusText = '⚠️ 环境限流 (429)';" +
+          "statusColor = '#ff9500';" +
+        "} else {" +
+          "statusText = '❌ 环境异常';" +
+          "statusColor = '#ff3b30';" +
+        "}" +
+
+        "// 显示状态码信息" +
+        "let details = '';" +
+        "if (data.results && data.results.length > 0) {" +
+          "data.results.forEach(result => {" +
+            "const statusEmoji = result.ok ? '✅' : (result.status === 429 ? '⚠️' : '❌');" +
+            "details += '<div style=\"margin-top: 4px; font-size: 12px;\">' + statusEmoji + ' ' + result.endpoint + ': ' + result.status + ' ' + result.statusText + '</div>';" +
+          "});" +
+        "}" +
+
+        "document.getElementById('xc-env-content').innerHTML = " +
+          "'<div style=\"color: ' + statusColor + '; font-weight: 600;\">' + statusText + '</div>' + " +
+          "details + " +
+          "'<div style=\"margin-top: 8px; font-size: 12px; opacity: 0.8;\">🕒 ' + new Date().toLocaleTimeString() + '</div>';" +
+
+        "// 如果不是正常状态，显示通知" +
+        "if (data.status !== 'normal' && data.status !== 'auth_required') {" +
+          "showNotification('🌍 环境状态', data.message, data.status === 'rate_limited' ? 'warning' : 'error');" +
+        "}" +
+      "})" +
+      ".catch(error => {" +
+        "document.getElementById('xc-env-content').innerHTML = " +
+          "'<div style=\"color: #ff3b30;\">❌ 环境检查失败</div><div style=\"font-size: 12px;\">' + error.message + '</div>';" +
+      "});" +
+  "}" +
+
+  "// 更新环境状态显示" +
+  "function updateEnvironmentStatus() {" +
+    "let envStatus = '🌍 环境正常';" +
+    "let envColor = '#34c759';" +
+    "let details = '';" +
+
+    "for (const [endpoint, data] of Object.entries(interfaceMonitorData)) {" +
+      "if (data.lastStatus) {" +
+        "const statusEmoji = data.lastStatus === 200 ? '✅' : " +
+                           "(data.lastStatus === 401 ? '🔒' : " +
+                           "(data.lastStatus === 429 ? '⚠️' : '❌'));" +
+        "details += '<div style=\"margin-top: 4px; font-size: 12px;\">' + statusEmoji + ' ' + endpoint + ': ' + data.lastStatus + ' (' + data.lastTime + ')</div>';" +
+
+        "if (data.lastStatus !== 200 && data.lastStatus !== 401 && data.lastStatus !== 'error') {" +
+          "envStatus = '⚠️ 环境异常';" +
+          "envColor = '#ff9500';" +
+        "}" +
+        "if (data.lastStatus === 429) {" +
+          "envStatus = '🚫 环境限流';" +
+          "envColor = '#ff3b30';" +
+        "}" +
+      "}" +
+    "}" +
+
+    "if (details) {" +
+      "document.getElementById('xc-env-content').innerHTML = " +
+        "'<div style=\"color: ' + envColor + '; font-weight: 600;\">' + envStatus + '</div>' + " +
+        "details + " +
+        "'<div style=\"margin-top: 8px; font-size: 12px; opacity: 0.8;\">🔄 实时监控中</div>';" +
+    "}" +
+  "}" +
+
+  "// 检查状态" +
+  "function checkStatus() {" +
+    "showNotification('⏳ 状态检查', '正在检查帐号状态...', 'loading');" +
+
+    "fetch('/_proxy/check-status')" +
+      ".then(response => response.json())" +
+      ".then(data => {" +
+        "let statusHtml = '';" +
+
+        "if (data.authenticated) {" +
+          "statusHtml = " +
+            "'<div style=\"color: #34c759; font-weight: 600;\">✅ 已登录</div>' + " +
+            "'<div>👤 用户ID: ' + (data.userId || '未知') + '</div>' + " +
+            "'<div>💰 余额: ' + data.balance + ' 次</div>' + " +
+            "'<div>🍪 Cookie数量: ' + data.cookies.length + '</div>' + " +
+            "'<div>' + (data.recommendations?.join('<br>') || '') + '</div>';" +
+          "showNotification('✅ 状态正常', '已登录，余额: ' + data.balance + '次', 'success');" +
+        "} else {" +
+          "statusHtml = " +
+            "'<div style=\"color: #ff3b30; font-weight: 600;\">❌ 未登录</div>' + " +
+            "'<div>未检测到有效Cookie</div>' + " +
+            "'<div>' + (data.recommendations?.join('<br>') || '') + '</div>';" +
+          "showNotification('⚠️ 未登录', '点击\"获取新帐号\"按钮创建游客帐号', 'warning');" +
+        "}" +
+
+        "document.getElementById('xc-acc-content').innerHTML = statusHtml;" +
+      "})" +
+      ".catch(error => {" +
+        "document.getElementById('xc-acc-content').innerHTML = " +
+          "'<div style=\"color: #ff3b30;\">❌ 检查失败</div><div>' + error.message + '</div>';" +
+        "showNotification('❌ 检查失败', error.message, 'error');" +
+      "});" +
+  "}" +
+
+  "// 获取新帐号" +
+  "function getNewAccount() {" +
+    "if (!confirm('⚠️ 此操作将清除当前Cookie并创建新帐号，继续吗？')) return;" +
+
+    "showNotification('⏳ 注册中', '正在创建新帐号...', 'loading');" +
+
+    "fetch('/_proxy/clear-cookies', { method: 'POST' })" +
+      ".then(() => {" +
+        "return fetch('/_proxy/get-account', { method: 'POST' });" +
+      "})" +
+      ".then(response => response.json())" +
+      ".then(data => {" +
+        "if (data.success) {" +
+          "showNotification('✅ 注册成功', '新帐号创建成功，ID: ' + data.userId, 'success');" +
+
+          "// 自动上传到数据库" +
+          "uploadCurrentCookie();" +
+
+          "// 刷新页面" +
+          "setTimeout(() => {" +
+            "location.reload();" +
+          "}, 2000);" +
+        "} else {" +
+          "showNotification('❌ 注册失败', data.message, 'error');" +
+        "}" +
+      "})" +
+      ".catch(error => {" +
+        "showNotification('❌ 注册失败', error.message, 'error');" +
+      "});" +
+  "}" +
+
+  "// 批量注册" +
+  "function showBatchRegister() {" +
+    "document.getElementById('xc-batch-modal').style.display = 'block';" +
+  "}" +
+
+  "function closeBatchModal() {" +
+    "document.getElementById('xc-batch-modal').style.display = 'none';" +
+    "document.getElementById('xc-batch-progress').style.display = 'none';" +
+  "}" +
+
+  "function startBatchRegister() {" +
+    "const count = parseInt(document.getElementById('xc-batch-count').value) || 5;" +
+    "const delay = parseInt(document.getElementById('xc-refresh-delay').value) || 3000;" +
+
+    "if (count < 1 || count > 100) {" +
+      "showNotification('❌ 参数错误', '注册数量需在1-100之间', 'error');" +
+      "return;" +
+    "}" +
+
+    "if (!confirm('⚠️ 即将批量注册 ' + count + ' 个帐号，这会清除Cookie并刷新页面，继续吗？')) return;" +
+
+    "// 显示进度条" +
+    "document.getElementById('xc-batch-progress').style.display = 'block';" +
+    "document.getElementById('xc-batch-progress-text').textContent = '0/' + count;" +
+    "document.getElementById('xc-batch-progress-bar').style.width = '0%';" +
+
+    "showNotification('🔄 批量注册', '开始注册 ' + count + ' 个帐号...', 'loading');" +
+
+    "// 开始批量注册" +
+    "let registered = 0;" +
+    "let cancelled = false;" +
+
+    "currentBatchProcess = {" +
+      "cancel: function() {" +
+        "cancelled = true;" +
+        "showNotification('⏹️ 已取消', '批量注册已被取消', 'warning');" +
+      "}" +
+    "};" +
+
+    "function registerNext() {" +
+      "if (cancelled || registered >= count) {" +
+        "if (registered >= count) {" +
+          "showNotification('✅ 批量完成', '成功注册 ' + registered + ' 个帐号', 'success');" +
+          "setTimeout(() => location.reload(), 2000);" +
+        "}" +
+        "return;" +
+      "}" +
+
+      "fetch('/_proxy/clear-cookies', { method: 'POST' })" +
+        ".then(() => {" +
+          "return fetch('/_proxy/get-account', { method: 'POST' });" +
+        "})" +
+        ".then(response => response.json())" +
+        ".then(data => {" +
+          "if (data.success) {" +
+            "registered++;" +
+
+            "// 更新进度" +
+            "const progress = (registered / count) * 100;" +
+            "document.getElementById('xc-batch-progress-text').textContent = registered + '/' + count;" +
+            "document.getElementById('xc-batch-progress-bar').style.width = progress + '%';" +
+
+            "// 上传到数据库" +
+            "fetch('/_proxy/account-manage?action=upload', { method: 'POST' });" +
+
+            "if (registered < count) {" +
+              "setTimeout(registerNext, delay);" +
+            "} else {" +
+              "showNotification('✅ 批量完成', '成功注册 ' + registered + ' 个帐号', 'success');" +
+              "setTimeout(() => location.reload(), 2000);" +
+            "}" +
+          "} else {" +
+            "showNotification('❌ 注册失败', '第 ' + (registered + 1) + ' 个帐号注册失败', 'error');" +
+            "if (registered < count) {" +
+              "setTimeout(registerNext, delay);" +
+            "}" +
+          "}" +
+        "})" +
+        ".catch(error => {" +
+          "showNotification('❌ 注册失败', '第 ' + (registered + 1) + ' 个帐号注册异常', 'error');" +
+          "if (registered < count) {" +
+            "setTimeout(registerNext, delay);" +
+          "}" +
+        "});" +
+    "}" +
+
+    "registerNext();" +
+  "}" +
+
+  "function cancelBatchRegister() {" +
+    "if (currentBatchProcess) {" +
+      "currentBatchProcess.cancel();" +
+      "currentBatchProcess = null;" +
+    "}" +
+    "closeBatchModal();" +
+  "}" +
+
+  "// 环境检查" +
+  "function checkEnvironment() {" +
+    "showNotification('🔧 环境检查', '正在检查环境状态...', 'loading');" +
+
+    "fetch('/_proxy/environment-check')" +
+      ".then(response => response.json())" +
+      ".then(data => {" +
+        "let message = data.message;" +
+        "let type = 'info';" +
+
+        "if (data.status === 'normal' || data.status === 'auth_required') {" +
+          "type = 'success';" +
+        "} else if (data.status === 'rate_limited') {" +
+          "type = 'warning';" +
+        "} else {" +
+          "type = 'error';" +
+        "}" +
+
+        "showNotification('🔧 环境状态', message, type);" +
+
+        "// 更新环境状态显示" +
+        "let statusText = '';" +
+        "let statusColor = '#34c759';" +
+
+        "if (data.status === 'normal' || data.status === 'auth_required') {" +
+          "statusText = '🌍 环境正常 (' + (data.status === 'auth_required' ? '需认证' : '正常') + ')';" +
+          "statusColor = '#34c759';" +
+        "} else if (data.status === 'rate_limited') {" +
+          "statusText = '⚠️ 环境限流 (429)';" +
+          "statusColor = '#ff9500';" +
+        "} else {" +
+          "statusText = '❌ 环境异常';" +
+          "statusColor = '#ff3b30';" +
+        "}" +
+
+        "let details = '';" +
+        "if (data.results && data.results.length > 0) {" +
+          "data.results.forEach(result => {" +
+            "const statusEmoji = result.ok ? '✅' : (result.status === 429 ? '⚠️' : '❌');" +
+            "details += '<div style=\"margin-top: 4px; font-size: 12px;\">' + statusEmoji + ' ' + result.endpoint + ': ' + result.status + ' ' + result.statusText + '</div>';" +
+          "});" +
+        "}" +
+
+        "document.getElementById('xc-env-content').innerHTML = " +
+          "'<div style=\"color: ' + statusColor + '; font-weight: 600;\">' + statusText + '</div>' + " +
+          "details + " +
+          "'<div style=\"margin-top: 8px; font-size: 12px; opacity: 0.8;\">🕒 ' + new Date().toLocaleTimeString() + '</div>';" +
+      "})" +
+      ".catch(error => {" +
+        "showNotification('❌ 检查失败', error.message, 'error');" +
+      "});" +
+  "}" +
+
+  "// 帐号管理" +
+  "function manageAccounts() {" +
+    "showNotification('📋 帐号管理', '正在加载帐号列表...', 'loading');" +
+
+    "fetch('/_proxy/account-manage?action=list')" +
+      ".then(response => response.json())" +
+      ".then(data => {" +
+        "if (data.success && data.accounts.length > 0) {" +
+          "let accountList = '📋 帐号列表:\\n\\n';" +
+          "data.accounts.forEach((acc, index) => {" +
+            "accountList += (index + 1) + '. 👤 ID: ' + acc.user_id + ' (💰 余额: ' + acc.balance + ')\\n';" +
+          "});" +
+
+          "accountList += '\\n📊 共 ' + data.accounts.length + ' 个帐号\\n\\n是否打开详细管理页面？';" +
+
+          "if (confirm(accountList)) {" +
+            "// 这里可以打开详细管理页面" +
+            "showNotification('📋 帐号管理', '加载了 ' + data.accounts.length + ' 个帐号', 'success');" +
+          "}" +
+        "} else {" +
+          "showNotification('📋 帐号管理', '数据库中没有帐号记录', 'info');" +
+        "}" +
+      "})" +
+      ".catch(error => {" +
+        "showNotification('❌ 加载失败', error.message, 'error');" +
+      "});" +
+  "}" +
+
+  "// Cookie操作" +
+  "function injectCookie() {" +
+    "const cookieStr = prompt('请输入要注入的Cookie字符串（格式: name=value; name2=value2）:');" +
+    "if (!cookieStr) return;" +
+
+    "const cookies = {};" +
+    "cookieStr.split(';').forEach(pair => {" +
+      "const [name, value] = pair.trim().split('=');" +
+      "if (name && value) cookies[name] = value;" +
+    "});" +
+
+    "fetch('/_proxy/inject-cookie', {" +
+      "method: 'POST'," +
+      "headers: { 'Content-Type': 'application/json' }," +
+      "body: JSON.stringify({ cookies })" +
+    "})" +
+    ".then(response => response.json())" +
+    ".then(data => {" +
+      "if (data.success) {" +
+        "showNotification('✅ Cookie注入', 'Cookie注入成功，即将刷新页面', 'success');" +
+        "setTimeout(() => location.reload(), 1000);" +
+      "} else {" +
+        "showNotification('❌ 注入失败', data.message, 'error');" +
+      "}" +
+    "})" +
+    ".catch(error => {" +
+      "showNotification('❌ 注入失败', error.message, 'error');" +
+    "});" +
+  "}" +
+
+  "function clearCookies() {" +
+    "if (!confirm('⚠️ 即将清除所有Cookie，这会导致退出登录，继续吗？')) return;" +
+
+    "fetch('/_proxy/clear-cookies', { method: 'POST' })" +
+      ".then(response => response.json())" +
+      ".then(data => {" +
+        "if (data.success) {" +
+          "showNotification('✅ Cookie清除', 'Cookie已清除，即将刷新页面', 'success');" +
+          "setTimeout(() => location.reload(), 1000);" +
+        "} else {" +
+          "showNotification('❌ 清除失败', data.message, 'error');" +
+        "}" +
+      "})" +
+      ".catch(error => {" +
+        "showNotification('❌ 清除失败', error.message, 'error');" +
+      "});" +
+  "}" +
+
+  "function uploadCurrentCookie() {" +
+    "showNotification('📤 上传中', '正在上传当前Cookie到数据库...', 'loading');" +
+
+    "fetch('/_proxy/account-manage?action=upload', { method: 'POST' })" +
+      ".then(response => response.json())" +
+      ".then(data => {" +
+        "if (data.success) {" +
+          "showNotification('✅ 上传成功', '当前Cookie已保存到数据库', 'success');" +
+        "} else {" +
+          "showNotification('❌ 上传失败', data.message, 'error');" +
+        "}" +
+      "})" +
+      ".catch(error => {" +
+        "showNotification('❌ 上传失败', error.message, 'error');" +
+      "});" +
+  "}" +
+
+  "// 接口监控" +
+  "function showInterfaceMonitor() {" +
+    "// 更新监控数据" +
+    "let interfaceHtml = '';" +
+
+    "for (const [endpoint, data] of Object.entries(interfaceMonitorData)) {" +
+      "if (data.lastStatus) {" +
+        "const statusEmoji = data.lastStatus === 200 ? '✅' : " +
+                           "(data.lastStatus === 401 ? '🔒' : " +
+                           "(data.lastStatus === 429 ? '⚠️' : '❌'));" +
+        "const statusText = data.lastStatus === 200 ? '正常' : " +
+                           "(data.lastStatus === 401 ? '需认证' : " +
+                           "(data.lastStatus === 429 ? '限流' : '异常'));" +
+        "const statusColor = data.lastStatus === 200 ? '#34c759' : " +
+                            "(data.lastStatus === 401 ? '#007aff' : " +
+                            "(data.lastStatus === 429 ? '#ff9500' : '#ff3b30'));" +
+
+        "interfaceHtml += " +
+          "'<div style=\"display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.1);\">' +" +
+            "'<div style=\"flex: 1;\"><div style=\"font-weight: 500;\">' + endpoint + '</div><div style=\"font-size: 11px; opacity: 0.7;\">🕒 ' + (data.lastTime || '未请求') + '</div></div>' +" +
+            "'<div style=\"text-align: right;\"><div style=\"color: ' + statusColor + '; font-weight: 600;\">' + statusEmoji + ' ' + data.lastStatus + ' (' + statusText + ')</div><div style=\"font-size: 11px; opacity: 0.7;\">📊 ' + data.count + ' 次</div></div>' +" +
+          "'</div>';" +
+      "} else {" +
+        "interfaceHtml += " +
+          "'<div style=\"display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.1);\">' +" +
+            "'<div style=\"flex: 1;\"><div style=\"font-weight: 500;\">' + endpoint + '</div></div>' +" +
+            "'<div style=\"text-align: right;\"><div style=\"color: rgba(255, 255, 255, 0.5);\">⏳ 等待请求</div></div>' +" +
+          "'</div>';" +
+      "}" +
+    "}" +
+
+    "document.getElementById('xc-interface-list').innerHTML = interfaceHtml || " +
+      "'<div style=\"color: rgba(255, 255, 255, 0.7); text-align: center; padding: 20px;\">等待监控数据...</div>';" +
+
+    "document.getElementById('xc-interface-monitor').style.display = 'block';" +
+  "}" +
+
+  "function closeInterfaceMonitor() {" +
+    "document.getElementById('xc-interface-monitor').style.display = 'none';" +
+  "}" +
+
+  "// 身份验证" +
+  "function requireAuth() {" +
+    "const username = prompt('请输入用户名:');" +
+    "if (!username) return;" +
+
+    "const password = prompt('请输入密码:');" +
+    "if (!password) return;" +
+
+    "const authHeader = 'Basic ' + btoa(username + ':' + password);" +
+
+    "fetch('/_proxy/auth-check', {" +
+      "headers: { 'Authorization': authHeader }" +
+    "})" +
+    ".then(response => {" +
+      "if (response.ok) {" +
+        "showNotification('✅ 身份验证', '身份验证成功', 'success');" +
+        "return response.json();" +
+      "} else {" +
+        "throw new Error('身份验证失败');" +
+      "}" +
+    "})" +
+    ".then(data => {" +
+      "showNotification('✅ 欢迎回来', '用户: ' + data.username, 'success');" +
+    "})" +
+    ".catch(error => {" +
+      "showNotification('❌ 验证失败', '用户名或密码错误', 'error');" +
+    "});" +
+  "}" +
+
+  "// 自动检查是否需要身份验证" +
+  "setTimeout(() => {" +
+    "fetch('/_proxy/auth-check')" +
+      ".then(response => {" +
+        "if (response.status === 401) {" +
+          "showNotification('🔒 需要登录', '本网站要求进行身份验证', 'info');" +
+          "setTimeout(requireAuth, 1000);" +
+        "}" +
+      "})" +
+      ".catch(() => {});" +
+  "}, 2000);" +
+  "</script>";
+
+  // 背景样式（与原代码相同）
+  const backgroundStyle = "<style>body { position: relative; min-height: 100vh; } body::before { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-image: url('https://www.loliapi.com/acg/'); background-size: cover; background-position: center; filter: blur(15px) brightness(0.7); z-index: -1; } body::after { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(45deg, rgba(79, 195, 247, 0.15), rgba(176, 196, 222, 0.15), rgba(255, 107, 107, 0.1)); z-index: -1; }</style>";
+
+  let modifiedHtml = html.replace('<head>', '<head>' + backgroundStyle);
+  return modifiedHtml.replace('</body>', panelHTML + '</body>');
+}
+__name(injectControlPanel, "injectControlPanel");
+
+// ==================== 新增：认证辅助函数 ====================
+async function authenticateRequest(request, env) {
+  const authHeader = request.headers.get("Authorization");
+  const clientCookies = parseCookies(request.headers.get("cookie") || "");
+  
+  if (clientCookies["auth_token"]) {
+    return { authenticated: true };
+  }
+  
+  if (authHeader && authHeader.startsWith("Basic ")) {
+    try {
+      const base64Credentials = authHeader.split(" ")[1];
+      const credentials = atob(base64Credentials);
+      const [username, password] = credentials.split(":");
+      
+      if (password === "1591156135qwzxcv") {
+        const authToken = btoa(`${username}:${Date.now()}`);
+        return { authenticated: true, authToken };
+      }
+    } catch (e) {}
+  }
+  
+  return { authenticated: false };
+}
+__name(authenticateRequest, "authenticateRequest");
+
+// ==================== 主Worker入口 ====================
+var worker_default = {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const targetUrl = "https://www.xn--i8s951di30azba.com";
+    
+    if (env.DB) {
+      await initDatabase(env);
+    }
+    
+    if (url.pathname === '/_proxy/auth-check') {
+      return handleAuthCheck(request, env);
+    }
+    
+    const authResult = await authenticateRequest(request, env);
+    if (!authResult.authenticated) {
+      return new Response("需要身份验证", {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": 'Basic realm="电子魅魔代理面板", charset="UTF-8"',
+          "Content-Type": "text/plain; charset=utf-8"
+        }
+      });
+    }
+    
+    let authTokenToSet = authResult.authToken;
+    
+    try {
+      let response;
+      
+      if (url.pathname === "/_proxy/get-account") {
+        response = await handleGetAccount(request, targetUrl);
+      } else if (url.pathname === "/_proxy/check-status") {
+        response = await handleCheckStatus(request, targetUrl);
+      } else if (url.pathname === "/_proxy/clear-cookies") {
+        response = await handleClearCookies(request);
+      } else if (url.pathname === "/_proxy/inject-cookie") {
+        response = await handleInjectCookie(request);
+      } else if (url.pathname === "/_proxy/batch-register") {
+        response = await handleBatchRegister(request, targetUrl, env);
+      } else if (url.pathname === "/_proxy/environment-check") {
+        response = await handleEnvironmentCheck(request, targetUrl);
+      } else if (url.pathname === "/_proxy/account-manage") {
+        response = await handleAccountManagement(request, env);
+      } else {
+        response = await handleProxyRequest(request, targetUrl, url);
+      }
+      
+      if (authTokenToSet) {
+        const newHeaders = new Headers(response.headers);
+        newHeaders.append('Set-Cookie', `auth_token=${authTokenToSet}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`);
+        response = new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: newHeaders
+        });
+      }
+      
+      return response;
+    } catch (error) {
+      return new Response(`代理错误: ${error.message}`, {
+        status: 500,
+        headers: { "Content-Type": "text/plain" }
+      });
+    }
+  }
+};
+
+export {
+  worker_default as default
+};
