@@ -1,11 +1,12 @@
-// --- 核心定义 ---
-var __defProp = Object.defineProperty;
-var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+/**
+ * 核心逻辑：Hook 监听 + 状态机批量注册 + D1 存储 + iOS 玻璃 UI
+ * 验证密码：1591156135qwzxcv
+ */
 
 const CONFIG = {
   targetUrl: "https://www.xn--i8s951di30azba.com",
-  adminPass: "1591156135qwzxcv", // 默认系统验证密码
-  dbBinding: "DB" 
+  adminPass: "1591156135qwzxcv",
+  dbBinding: "DB" // 确保 D1 绑定名为 DB
 };
 
 export default {
@@ -20,74 +21,68 @@ export default {
         headers: { "WWW-Authenticate": 'Basic realm="System Login"' }
       });
     }
-    const authBase64 = authHeader.split(" ")[1];
     try {
-      const decodedAuth = atob(authBase64);
-      const [user, pass] = decodedAuth.split(":");
-      if (pass !== CONFIG.adminPass) {
-        return new Response("Forbidden", { status: 403 });
-      }
+      const authBase64 = authHeader.split(" ")[1];
+      const [user, pass] = atob(authBase64).split(":");
+      if (pass !== CONFIG.adminPass) return new Response("Forbidden", { status: 403 });
     } catch (e) {
       return new Response("Unauthorized", { status: 401, headers: { "WWW-Authenticate": 'Basic realm="System Login"' } });
     }
 
-    // 2. 数据库初始化
+    // 2. D1 数据库初始化
     if (env[CONFIG.dbBinding]) {
       await initDatabase(env[CONFIG.dbBinding]);
     }
 
     // 3. 内部 API 路由
-    if (url.pathname === "/_proxy/save-account") {
-      return handleSaveAccount(request, env[CONFIG.dbBinding]);
-    }
-    if (url.pathname === "/_proxy/db-list") {
-      return handleDbList(env[CONFIG.dbBinding]);
+    if (url.pathname === "/_proxy/save-to-db") {
+      return handleSaveToDb(request, env[CONFIG.dbBinding]);
     }
     if (url.pathname === "/_proxy/clear-cookies") {
       return handleClearCookies();
     }
+    if (url.pathname === "/_proxy/get-db-list") {
+      return handleGetDbList(env[CONFIG.dbBinding]);
+    }
 
-    // 4. 代理并注入
+    // 4. 正常代理并注入 UI 脚本
     return await handleProxyRequest(request, CONFIG.targetUrl, url);
   }
 };
 
-// --- D1 数据库初始化 ---
+// --- D1 数据库 ---
 async function initDatabase(db) {
-  const sql = `
-    CREATE TABLE IF NOT EXISTS account_manage (
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       cookies TEXT,
-      balance INTEGER,
-      create_time DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `;
-  await db.prepare(sql).run();
+      info TEXT,
+      time DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
 }
 
-// --- 存储账号 API ---
-async function handleSaveAccount(request, db) {
-  if (!db) return new Response("DB Not Found", { status: 500 });
+async function handleSaveToDb(request, db) {
   const data = await request.json();
-  await db.prepare("INSERT OR REPLACE INTO account_manage (id, cookies, balance) VALUES (?, ?, ?)")
-          .bind(data.id, JSON.stringify(data.cookies), data.balance || 35).run();
+  await db.prepare("INSERT OR REPLACE INTO accounts (id, cookies, info) VALUES (?, ?, ?)")
+          .bind(data.id, data.cookies, data.info).run();
   return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
 }
 
-async function handleDbList(db) {
-  const { results } = await db.prepare("SELECT * FROM account_manage ORDER BY create_time DESC").all();
+async function handleGetDbList(db) {
+  const { results } = await db.prepare("SELECT * FROM accounts ORDER BY time DESC").all();
   return new Response(JSON.stringify(results), { headers: { "Content-Type": "application/json" } });
 }
 
 async function handleClearCookies() {
-  const list = ["sb-rls-auth-token", "_rid", "ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog", "chosen_language", "invite_code"];
-  const headers = list.map(c => `\${c}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`);
+  const cookies = ["sb-rls-auth-token", "_rid", "ph_phc_pXRYopwyByw2wy8XGxzRcko4lPiDr58YspxHOAjThEj_posthog", "chosen_language", "invite_code"];
+  const headers = cookies.map(c => `${c}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`);
   return new Response(JSON.stringify({ success: true }), {
     headers: { "Content-Type": "application/json", "Set-Cookie": headers.join(", ") }
   });
 }
 
-// --- 代理核心 ---
+// --- 代理与注入 ---
 async function handleProxyRequest(request, targetUrl, url) {
   const targetHeaders = new Headers(request.headers);
   targetHeaders.delete("host");
@@ -102,12 +97,14 @@ async function handleProxyRequest(request, targetUrl, url) {
   });
 
   const response = await fetch(targetRequest);
-  
-  // 拦截特定 API 的响应状态以便前端 UI 捕获
   const contentType = response.headers.get("content-type") || "";
+
   if (contentType.includes("text/html")) {
     let html = await response.text();
-    html = injectIosUI(html);
+    // 在 <head> 最前面注入 Hook 脚本，确保比网站 JS 先运行
+    const injectedJs = getInjectedJs();
+    html = html.replace("<head>", `<head>${injectedJs}`);
+    
     const newHeaders = new Headers(response.headers);
     newHeaders.set("Content-Type", "text/html; charset=utf-8");
     newHeaders.delete("content-security-policy");
@@ -117,173 +114,135 @@ async function handleProxyRequest(request, targetUrl, url) {
   return response;
 }
 
-// --- 注入 iOS 毛玻璃 UI (消息弹窗风格) ---
-function injectIosUI(html) {
-  const uiHTML = `
-  <!-- iOS 风格 UI 注入 -->
+// --- 核心注入脚本 (Hook + UI) ---
+function getInjectedJs() {
+  return `
   <style>
-    #ios-notice-container {
-      position: fixed; top: -100px; left: 50%; transform: translateX(-50%);
-      width: 90%; max-width: 380px; z-index: 2147483647;
-      transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+    #ios-notice-wrap {
+      position: fixed; top: -150px; left: 50%; transform: translateX(-50%);
+      width: 90%; max-width: 420px; z-index: 2147483647;
+      transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
     }
-    #ios-notice-container.show { top: 20px; }
-    
+    #ios-notice-wrap.active { top: 20px; }
     .ios-pill {
-      background: rgba(255, 255, 255, 0.6);
-      backdrop-filter: blur(20px) saturate(180%);
-      -webkit-backdrop-filter: blur(20px) saturate(180%);
-      border-radius: 25px; border: 1px solid rgba(255, 255, 255, 0.4);
-      padding: 15px 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.12);
-      display: flex; flex-direction: column; gap: 8px;
+      background: rgba(255, 255, 255, 0.45); backdrop-filter: blur(25px) saturate(180%);
+      -webkit-backdrop-filter: blur(25px) saturate(180%);
+      border-radius: 30px; border: 1px solid rgba(255, 255, 255, 0.3);
+      padding: 20px; box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     }
-
-    .ios-header { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #666; }
-    .ios-content { font-size: 15px; color: #000; font-weight: 500; line-height: 1.4; }
-    .ios-footer { display: flex; gap: 10px; margin-top: 5px; }
-    
+    .ios-title { display: flex; justify-content: space-between; font-size: 13px; color: rgba(0,0,0,0.5); margin-bottom: 8px; }
+    .ios-msg { font-size: 16px; color: #000; font-weight: 600; line-height: 1.4; }
+    .ios-actions { display: flex; gap: 10px; margin-top: 15px; }
     .ios-btn {
-      flex: 1; padding: 8px; border-radius: 12px; border: none;
-      background: rgba(0, 122, 255, 0.15); color: #007AFF;
-      font-weight: 600; cursor: pointer; font-size: 13px; transition: 0.2s;
+      flex: 1; padding: 12px; border-radius: 15px; border: none;
+      background: rgba(0, 122, 255, 0.12); color: #007AFF;
+      font-weight: 700; cursor: pointer; font-size: 14px; transition: 0.2s;
     }
-    .ios-btn:active { background: rgba(0, 122, 255, 0.3); }
-    .ios-btn.danger { color: #FF3B30; background: rgba(255, 59, 48, 0.1); }
-
-    #ios-mini-island {
-      position: fixed; top: 15px; left: 50%; transform: translateX(-50%);
-      height: 5px; width: 40px; background: #000; border-radius: 10px;
-      z-index: 2147483646; cursor: pointer; transition: 0.3s;
+    .ios-btn.danger { background: rgba(255, 59, 48, 0.12); color: #FF3B30; }
+    .ios-btn:active { transform: scale(0.95); opacity: 0.7; }
+    
+    #ios-island {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      width: 40px; height: 6px; background: #000; border-radius: 10px;
+      z-index: 2147483646; cursor: pointer; transition: 0.4s cubic-bezier(0.16, 1, 0.3, 1);
     }
-    #ios-mini-island:hover { width: 100px; height: 20px; opacity: 0.8; }
+    #ios-island:hover { width: 100px; height: 24px; opacity: 0.9; }
   </style>
 
-  <div id="ios-mini-island" onclick="showIosNotice()"></div>
-  
-  <div id="ios-notice-container">
+  <div id="ios-island" onclick="sakShowNotice()"></div>
+  <div id="ios-notice-wrap">
     <div class="ios-pill">
-      <div class="ios-header">
-        <span>系统通知</span>
-        <span id="ios-time">刚刚</span>
-      </div>
-      <div id="ios-msg-body" class="ios-content">
-        正在检查账号状态...
-      </div>
-      <div class="ios-footer" id="ios-actions">
-        <button class="ios-btn" onclick="startBatch()">批量注册</button>
-        <button class="ios-btn" onclick="checkEnv()">环境检查</button>
-        <button class="ios-btn danger" onclick="hideIosNotice()">关闭</button>
+      <div class="ios-title"><span>系统通知</span><span id="sak-time">刚刚</span></div>
+      <div id="sak-msg" class="ios-msg">正在监控网络环境...</div>
+      <div class="ios-actions">
+        <button class="ios-btn" onclick="sakStartBatch()">批量创建</button>
+        <button class="ios-btn" onclick="sakShowManager()">账号管理</button>
+        <button class="ios-btn danger" onclick="sakHideNotice()">关闭</button>
       </div>
     </div>
   </div>
 
   <script>
-    // 立即执行：检查批量注册状态
-    (function() {
-      const batchCount = localStorage.getItem('sak_batch_count');
-      const isRunning = localStorage.getItem('sak_batch_running');
+    // 1. Hook 网络请求 (在网页任何 JS 运行前)
+    const originalFetch = window.fetch;
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      const url = args[0].toString();
       
-      if (isRunning === 'true' && batchCount > 0) {
-        window.addEventListener('load', async () => {
-          showIosNotice("正在批量注册中，剩余: " + batchCount);
-          
-          // 检查是否已经获取到 Cookie
-          const hasCookie = document.cookie.includes('sb-rls-auth-token');
-          if (hasCookie) {
-            const rid = document.cookie.match(/_rid=([^;]+)/)?.[1];
-            // 存库
-            await fetch('/_proxy/save-account', {
-              method: 'POST',
-              body: JSON.stringify({ id: rid || Date.now(), cookies: document.cookie })
-            });
-            
-            // 减少计数并重置环境
-            localStorage.setItem('sak_batch_count', batchCount - 1);
-            await fetch('/_proxy/clear-cookies');
-            location.reload();
-          } else {
-            // 如果没获取到，监控网络请求
-            monitorNetwork();
-          }
-        });
-      }
-    })();
-
-    function showIosNotice(msg) {
-      const container = document.getElementById('ios-notice-container');
-      if(msg) document.getElementById('ios-msg-body').innerHTML = msg;
-      container.classList.add('show');
-    }
-
-    function hideIosNotice() {
-      document.getElementById('ios-notice-container').classList.remove('show');
-    }
-
-    async function checkEnv() {
-      showIosNotice("正在深度扫描 API 环境...");
-      const res = await fetch(location.origin + '/api/auth/anonymous-sign-in', { method: 'POST' });
-      if (res.status === 429) {
-        showIosNotice("⚠️ 警告：检测到 429 错误。<br>你的 IP 可能已被拉黑，无法创建游客账号。");
-      } else {
-        showIosNotice("✅ 环境正常。<br>可以进行账号创建。");
-      }
-    }
-
-    function startBatch() {
-      const num = prompt("请输入要批量注册的数量:", "5");
-      if(!num) return;
-      if(!confirm("批量注册将临时删除本机账号，确认？")) return;
-      
-      localStorage.setItem('sak_batch_count', num);
-      localStorage.setItem('sak_batch_running', 'true');
-      
-      fetch('/_proxy/clear-cookies').then(() => location.reload());
-    }
-
-    function monitorNetwork() {
-      // 监听接口
-      const originalFetch = window.fetch;
-      window.fetch = async (...args) => {
-        const response = await originalFetch(...args);
-        if (args[0].includes('/api/auth/anonymous-sign-in')) {
-          if (response.status === 429) {
-            showIosNotice("❌ 注册失败: IP 被限制 (429)");
-            localStorage.setItem('sak_batch_running', 'false');
-          }
-          if (response.status === 200) {
-            showIosNotice("✅ 抓取成功，正在存库...");
-          }
+      if (url.includes('/api/auth/anonymous-sign-in')) {
+        if (response.status === 429) {
+          sakShowNotice("⚠️ 注册失败: IP 被拉黑 (429)<br>请更换节点后再试。");
+          localStorage.removeItem('sak_batch_count');
+        } else if (response.status === 200) {
+          // 注册成功，等待 Cookie 写入
+          setTimeout(() => sakHandleSuccess(), 1500);
         }
-        return response;
-      };
+      }
+      return response;
+    };
+
+    // 2. 状态机逻辑
+    async function sakHandleSuccess() {
+      const batchCount = localStorage.getItem('sak_batch_count');
+      if (batchCount && parseInt(batchCount) > 0) {
+        const rid = document.cookie.match(/_rid=([^;]+)/)?.[1] || Date.now();
+        // 上传数据库
+        await originalFetch('/_proxy/save-to-db', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ id: rid, cookies: document.cookie, info: '自动注册' })
+        });
+
+        const nextCount = parseInt(batchCount) - 1;
+        if (nextCount > 0) {
+          localStorage.setItem('sak_batch_count', nextCount);
+          sakShowNotice("✅ 注册成功！正在准备下一个... (剩余: " + nextCount + ")");
+          await originalFetch('/_proxy/clear-cookies');
+          setTimeout(() => location.reload(), 1000);
+        } else {
+          localStorage.removeItem('sak_batch_count');
+          sakShowNotice("🎉 批量注册任务已完成！");
+        }
+      }
     }
 
-    // 自动显示面板逻辑
-    setTimeout(() => {
-      const hasCookie = document.cookie.includes('sb-rls-auth-token');
-      if (!hasCookie && localStorage.getItem('sak_batch_running') !== 'true') {
-        showIosNotice("未检测到游客账号。<br>点击下方按钮开始批量获取。");
+    // 3. UI 交互
+    function sakShowNotice(msg) {
+      if(msg) document.getElementById('sak-msg').innerHTML = msg;
+      document.getElementById('ios-notice-wrap').classList.add('active');
+    }
+    function sakHideNotice() {
+      document.getElementById('ios-notice-wrap').classList.remove('active');
+    }
+
+    function sakStartBatch() {
+      const n = prompt("请输入要批量创建的数量:", "5");
+      if(!n) return;
+      localStorage.setItem('sak_batch_count', n);
+      originalFetch('/_proxy/clear-cookies').then(() => location.reload());
+    }
+
+    async function sakShowManager() {
+      const res = await originalFetch('/_proxy/get-db-list');
+      const list = await res.json();
+      sakShowNotice("数据库中共有 " + list.length + " 个账号。<br>详情已输出到控制台(F12)。");
+      console.table(list);
+    }
+
+    // 初始化检测
+    window.addEventListener('load', () => {
+      const count = localStorage.getItem('sak_batch_count');
+      if (count && parseInt(count) > 0) {
+        sakShowNotice("🚀 批量任务进行中...<br>当前进度: 剩余 " + count + " 个");
       } else {
-        showIosNotice("账号已就绪。<br>可以在账号管理中查看详情。");
+        setTimeout(() => {
+          if(!document.cookie.includes('sb-rls-auth-token')) {
+            sakShowNotice("未检测到有效账号。<br>点击下方按钮开始批量获取。");
+          }
+        }, 2000);
       }
-    }, 2000);
+    });
   </script>
   `;
-  
-  // 在 body 最前端注入，确保优先加载
-  return html.replace("<body>", "<body>" + uiHTML);
 }
-
-function parseCookies(cookieString) {
-  const cookies = {};
-  if (cookieString) {
-    cookieString.split(";").forEach((cookie) => {
-      const [name, ...valueParts] = cookie.trim().split("=");
-      const value = valueParts.join("=");
-      if (name) cookies[name] = decodeURIComponent(value);
-    });
-  }
-  return cookies;
-}
-
-export { worker_default as default };
