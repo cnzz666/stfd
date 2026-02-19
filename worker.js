@@ -4,7 +4,6 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 // ==================== D1 数据库初始化与操作 ====================
 async function initDatabase(env) {
   try {
-    // 检查表是否存在，不存在则创建
     const tableCheck = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='account_manage'"
     ).first();
@@ -47,7 +46,6 @@ async function saveAccountToDB(env, accountData) {
     ).bind(userId).first();
     
     if (existing) {
-      // 更新现有记录
       await env.DB.prepare(`
         UPDATE account_manage 
         SET cookies = ?, token = ?, balance = ?, update_time = CURRENT_TIMESTAMP, 
@@ -63,7 +61,6 @@ async function saveAccountToDB(env, accountData) {
       ).run();
       console.log(`帐号 ${userId} 已更新到数据库`);
     } else {
-      // 插入新记录
       await env.DB.prepare(`
         INSERT INTO account_manage (user_id, cookies, token, balance, ip_address, user_agent)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -163,12 +160,10 @@ async function handleAuthCheck(request, env) {
     const authHeader = request.headers.get("Authorization");
     const clientCookies = parseCookies(request.headers.get("cookie") || "");
     
-    // 检查是否已通过身份验证（有特定的认证 Cookie）
     const isAuthenticated = "auth_token" in clientCookies || 
                            (authHeader && authHeader.startsWith("Basic "));
     
     if (!isAuthenticated) {
-      // 返回 401 触发浏览器原生身份验证弹窗
       return new Response("需要身份验证", {
         status: 401,
         headers: {
@@ -178,7 +173,6 @@ async function handleAuthCheck(request, env) {
       });
     }
     
-    // 验证密码（默认密码：1591156135qwzxcv）
     if (authHeader) {
       const base64Credentials = authHeader.split(" ")[1];
       const credentials = atob(base64Credentials);
@@ -188,7 +182,6 @@ async function handleAuthCheck(request, env) {
         return new Response("密码错误", { status: 401 });
       }
       
-      // 设置认证 Cookie（30天有效期）
       const authToken = btoa(`${username}:${Date.now()}`);
       const setCookieHeader = `auth_token=${authToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`;
       
@@ -233,12 +226,10 @@ async function handleBatchRegister(request, targetUrl, env) {
     const errors = [];
     let registeredCount = 0;
     
-    // 批量注册逻辑
     for (let i = 0; i < count; i++) {
       try {
         console.log(`开始注册第 ${i + 1}/${count} 个帐号`);
         
-        // 1. 清除本地 Cookie
         const clearResponse = await fetch(new URL("/_proxy/clear-cookies", request.url), {
           method: "POST",
           headers: request.headers
@@ -249,10 +240,8 @@ async function handleBatchRegister(request, targetUrl, env) {
           continue;
         }
         
-        // 2. 延迟等待
         await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // 3. 注册新帐号（使用原 handleGetAccount 逻辑）
         const registerResponse = await fetch(new URL("/_proxy/get-account", request.url), {
           method: "POST",
           headers: request.headers
@@ -279,7 +268,6 @@ async function handleBatchRegister(request, targetUrl, env) {
           continue;
         }
         
-        // 4. 保存到数据库
         const saveResult = await saveAccountToDB(env, {
           userId: registerData.userId,
           cookies: registerData.cookies,
@@ -308,7 +296,6 @@ async function handleBatchRegister(request, targetUrl, env) {
           });
         }
         
-        // 5. 如果设置了自动刷新，延迟后刷新
         if (autoRefresh && i < count - 1) {
           await new Promise(resolve => setTimeout(resolve, refreshDelay));
         }
@@ -356,7 +343,6 @@ async function handleEnvironmentCheck(request, targetUrl) {
   try {
     const checkResults = [];
     
-    // 检查接口 1: /api/auth/token
     try {
       const tokenResponse = await fetch(`${targetUrl}/api/auth/token`, {
         method: "GET",
@@ -385,7 +371,6 @@ async function handleEnvironmentCheck(request, targetUrl) {
       });
     }
     
-    // 检查接口 2: /api/auth/anonymous-sign-in
     try {
       const signinResponse = await fetch(`${targetUrl}/api/auth/anonymous-sign-in`, {
         method: "POST",
@@ -422,7 +407,6 @@ async function handleEnvironmentCheck(request, targetUrl) {
       });
     }
     
-    // 分析检查结果
     const allOk = checkResults.every(r => r.ok);
     const has401 = checkResults.some(r => r.status === 401);
     const has429 = checkResults.some(r => r.status === 429);
@@ -501,7 +485,6 @@ async function handleAccountManagement(request, env) {
       }
       
       case "upload": {
-        // 上传当前 Cookie 到数据库
         const clientCookies = parseCookies(request.headers.get("cookie") || "");
         const userId = clientCookies["_rid"] || `upload-${Date.now()}`;
         
@@ -546,15 +529,12 @@ async function handleAccountManagement(request, env) {
 }
 __name(handleAccountManagement, "handleAccountManagement");
 
-// ==================== 增强的 Cookie 清除函数 ====================
 async function handleClearCookies(request) {
   try {
-    // 构建完整的清除 Cookie 头部
     const setCookieHeaders = COOKIES_TO_CLEAR.map((cookie) => {
       return `${cookie}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure; Max-Age=0`;
     });
     
-    // 额外清除可能的子域名 Cookie
     const additionalCookies = COOKIES_TO_CLEAR.map((cookie) => {
       return `${cookie}=; Path=/; Domain=.xn--i8s951di30azba.com; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure; Max-Age=0`;
     });
@@ -584,7 +564,6 @@ async function handleClearCookies(request) {
 }
 __name(handleClearCookies, "handleClearCookies");
 
-// ==================== 状态检测增强 ====================
 async function handleCheckStatus(request, targetUrl) {
   try {
     const clientCookies = parseCookies(request.headers.get("cookie") || "");
@@ -596,7 +575,6 @@ async function handleCheckStatus(request, targetUrl) {
     
     if (hasAuth) {
       try {
-        // 尝试获取用户信息
         const meResponse = await fetch(targetUrl + "/api/me", {
           headers: {
             "Cookie": request.headers.get("cookie") || ""
@@ -613,7 +591,6 @@ async function handleCheckStatus(request, targetUrl) {
           };
         }
         
-        // 尝试获取配额信息
         const quotaResponse = await fetch(targetUrl + "/api/quota", {
           headers: {
             "Cookie": request.headers.get("cookie") || ""
@@ -628,7 +605,6 @@ async function handleCheckStatus(request, targetUrl) {
       }
     }
     
-    // 检查关键接口状态
     const interfaceStatus = {
       token: { checked: false, status: null, message: "" },
       signin: { checked: false, status: null, message: "" }
@@ -684,7 +660,6 @@ async function handleCheckStatus(request, targetUrl) {
 }
 __name(handleCheckStatus, "handleCheckStatus");
 
-// ==================== 原有函数（完全保留）====================
 async function handleProxyRequest(request, targetUrl, url) {
   const targetHeaders = new Headers(request.headers);
   targetHeaders.delete("host");
@@ -972,7 +947,7 @@ function generateUUID() {
 }
 __name(generateUUID, "generateUUID");
 
-// ==================== iOS毛玻璃控制面板注入 ====================
+// ==================== iOS毛玻璃控制面板注入（修复按钮显示延迟）====================
 function injectControlPanel(html, url) {
   const panelHTML = `
 <!-- iOS毛玻璃控制面板 -->
@@ -986,7 +961,7 @@ function injectControlPanel(html, url) {
   z-index: 2147483647;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 ">
-  <!-- 中上角功能按钮 -->
+  <!-- 中上角功能按钮 - 修复过渡延迟，改为0.5s直接淡入 -->
   <div id="xc-toggle-btn" style="
     position: fixed;
     top: 15px;
@@ -995,7 +970,7 @@ function injectControlPanel(html, url) {
     pointer-events: auto;
     z-index: 10000;
     opacity: 0;
-    transition: opacity 0.5s ease 3s;
+    transition: opacity 0.5s ease;
   ">
     <button onclick="toggleControlPanel()" style="
       background: rgba(255, 255, 255, 0.25);
@@ -2106,56 +2081,98 @@ setTimeout(() => {
 }
 __name(injectControlPanel, "injectControlPanel");
 
-// ==================== 主Worker入口 ====================
+// ==================== 新增：认证辅助函数（修复登录逻辑）====================
+async function authenticateRequest(request, env) {
+  const authHeader = request.headers.get("Authorization");
+  const clientCookies = parseCookies(request.headers.get("cookie") || "");
+  
+  // 检查 auth_token cookie
+  if (clientCookies["auth_token"]) {
+    return { authenticated: true };
+  }
+  
+  // 检查 Basic 认证
+  if (authHeader && authHeader.startsWith("Basic ")) {
+    try {
+      const base64Credentials = authHeader.split(" ")[1];
+      const credentials = atob(base64Credentials);
+      const [username, password] = credentials.split(":");
+      
+      if (password === "1591156135qwzxcv") {
+        // 生成新的 auth_token 以便后续使用
+        const authToken = btoa(`${username}:${Date.now()}`);
+        return { authenticated: true, authToken };
+      }
+    } catch (e) {}
+  }
+  
+  return { authenticated: false };
+}
+__name(authenticateRequest, "authenticateRequest");
+
+// ==================== 主Worker入口（修复认证拦截）====================
 var worker_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const targetUrl = "https://www.xn--i8s951di30azba.com";
     
-    // 初始化数据库（如果是第一次请求）
     if (env.DB) {
       await initDatabase(env);
     }
     
-    // 身份验证检查（所有路径都需要）
-    if (url.pathname !== '/_proxy/auth-check') {
-      const authCheck = await handleAuthCheck(request, env);
-      if (authCheck.status === 401) {
-        return authCheck;
-      }
+    // 处理身份验证专用端点
+    if (url.pathname === '/_proxy/auth-check') {
+      return handleAuthCheck(request, env);
     }
     
+    // 对其他路径执行认证检查
+    const authResult = await authenticateRequest(request, env);
+    if (!authResult.authenticated) {
+      return new Response("需要身份验证", {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": 'Basic realm="电子魅魔代理面板", charset="UTF-8"',
+          "Content-Type": "text/plain; charset=utf-8"
+        }
+      });
+    }
+    
+    // 用于记录是否需要添加认证 Cookie
+    let authTokenToSet = authResult.authToken;
+    
     try {
-      // 原有路由
+      let response;
+      
       if (url.pathname === "/_proxy/get-account") {
-        return handleGetAccount(request, targetUrl);
-      }
-      if (url.pathname === "/_proxy/check-status") {
-        return handleCheckStatus(request, targetUrl);
-      }
-      if (url.pathname === "/_proxy/clear-cookies") {
-        return handleClearCookies(request);
-      }
-      if (url.pathname === "/_proxy/inject-cookie") {
-        return handleInjectCookie(request);
-      }
-      
-      // 新增路由
-      if (url.pathname === "/_proxy/auth-check") {
-        return handleAuthCheck(request, env);
-      }
-      if (url.pathname === "/_proxy/batch-register") {
-        return handleBatchRegister(request, targetUrl, env);
-      }
-      if (url.pathname === "/_proxy/environment-check") {
-        return handleEnvironmentCheck(request, targetUrl);
-      }
-      if (url.pathname === "/_proxy/account-manage") {
-        return handleAccountManagement(request, env);
+        response = await handleGetAccount(request, targetUrl);
+      } else if (url.pathname === "/_proxy/check-status") {
+        response = await handleCheckStatus(request, targetUrl);
+      } else if (url.pathname === "/_proxy/clear-cookies") {
+        response = await handleClearCookies(request);
+      } else if (url.pathname === "/_proxy/inject-cookie") {
+        response = await handleInjectCookie(request);
+      } else if (url.pathname === "/_proxy/batch-register") {
+        response = await handleBatchRegister(request, targetUrl, env);
+      } else if (url.pathname === "/_proxy/environment-check") {
+        response = await handleEnvironmentCheck(request, targetUrl);
+      } else if (url.pathname === "/_proxy/account-manage") {
+        response = await handleAccountManagement(request, env);
+      } else {
+        response = await handleProxyRequest(request, targetUrl, url);
       }
       
-      // 默认代理请求
-      return await handleProxyRequest(request, targetUrl, url);
+      // 如果需要设置新的认证 Cookie，则添加到响应头
+      if (authTokenToSet) {
+        const newHeaders = new Headers(response.headers);
+        newHeaders.append('Set-Cookie', `auth_token=${authTokenToSet}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`);
+        response = new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: newHeaders
+        });
+      }
+      
+      return response;
     } catch (error) {
       return new Response(`代理错误: ${error.message}`, {
         status: 500,
