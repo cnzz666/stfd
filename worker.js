@@ -2009,7 +2009,7 @@ __name(handleSecurityAudit, "handleSecurityAudit");
 
 // ========== 11. 控制面板注入函数 ==========
 function injectControlPanel(html, url, env) {
-  // 生成完整的iOS毛玻璃悬浮窗HTML（超过1000行CSS+JS）
+  // 生成完整的iOS毛玻璃悬浮窗HTML
   const panelHTML = generateControlPanelHTML(url, env);
   
   // 插入到body结束前
@@ -2023,11 +2023,10 @@ function injectControlPanel(html, url, env) {
 }
 __name(injectControlPanel, "injectControlPanel");
 
-// ========== 12. 生成控制面板HTML（iOS毛玻璃风格）==========
+// ========== 12. 生成控制面板HTML（完整iOS毛玻璃风格）==========
 function generateControlPanelHTML(url, env) {
-  // 由于篇幅限制，这里提供简化版本，实际应包含完整的iOS毛玻璃UI
   return `
-<!-- 代理控制面板 - iOS毛玻璃风格 -->
+<!-- 代理控制面板 - 完整iOS毛玻璃风格 -->
 <style>
 ${generateControlPanelCSS()}
 </style>
@@ -2044,17 +2043,23 @@ ${generateControlPanelJavaScript(url, env)}
 
 function generateControlPanelCSS() {
   return `
-    /* iOS毛玻璃效果CSS - 超过500行 */
+    /* iOS毛玻璃效果CSS - 完整版 */
     :root {
-      --ios-blue: #007AFF;
-      --ios-gray: #8E8E93;
-      --ios-light: #F2F2F7;
-      --ios-dark: #1C1C1E;
-      --glass-bg: rgba(255, 255, 255, 0.15);
-      --glass-border: rgba(255, 255, 255, 0.3);
-      --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+      --glass-bg-light: rgba(255, 255, 255, 0.7);
+      --glass-bg-medium: rgba(255, 255, 255, 0.4);
+      --glass-border: rgba(255, 255, 255, 0.5);
+      --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+      --text-primary: #1c1c1e;
+      --text-secondary: #3a3a3c;
+      --accent-blue: #007aff;
+      --accent-green: #34c759;
+      --accent-red: #ff3b30;
+      --accent-orange: #ff9500;
+      --radius-large: 24px;
+      --radius-medium: 16px;
+      --radius-small: 12px;
     }
-    
+
     #proxy-control-system {
       position: fixed;
       top: 0;
@@ -2063,21 +2068,20 @@ function generateControlPanelCSS() {
       height: 100%;
       pointer-events: none;
       z-index: 2147483647;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     }
-    
-    /* 中上角主按钮 - iOS灵动岛风格 */
+
+    /* 主按钮 - 右下角圆形 */
     .proxy-main-button {
       position: fixed;
-      top: 20px;
-      left: 50%;
-      transform: translateX(-50%);
+      bottom: 24px;
+      right: 24px;
       width: 60px;
       height: 60px;
-      background: var(--glass-bg);
+      background: var(--glass-bg-light);
       backdrop-filter: blur(20px) saturate(180%);
       -webkit-backdrop-filter: blur(20px) saturate(180%);
-      border-radius: 18px;
+      border-radius: 30px;
       border: 1px solid var(--glass-border);
       box-shadow: var(--glass-shadow);
       cursor: pointer;
@@ -2085,12 +2089,484 @@ function generateControlPanelCSS() {
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: all 0.4s cubic-bezier(0.2, 0.9, 0.4, 1);
+      transition: all 0.3s cubic-bezier(0.2, 0.9, 0.4, 1);
       z-index: 10000;
-      overflow: hidden;
+      opacity: 0;
+      transform: scale(0.9);
     }
-    
-    /* 更多CSS样式... */
+    .proxy-main-button:hover {
+      transform: scale(1.05);
+      background: rgba(255, 255, 255, 0.85);
+    }
+    .button-icon {
+      font-size: 28px;
+      line-height: 1;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+    }
+
+    /* 悬浮面板 */
+    .proxy-floating-panel {
+      position: fixed;
+      bottom: 100px;
+      right: 24px;
+      width: 360px;
+      max-width: calc(100vw - 48px);
+      max-height: 80vh;
+      background: var(--glass-bg-light);
+      backdrop-filter: blur(30px) saturate(180%);
+      -webkit-backdrop-filter: blur(30px) saturate(180%);
+      border-radius: var(--radius-large);
+      border: 1px solid var(--glass-border);
+      box-shadow: var(--glass-shadow), 0 20px 40px rgba(0,0,0,0.1);
+      pointer-events: all;
+      display: flex;
+      flex-direction: column;
+      transform: translateY(20px) scale(0.95);
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.3s ease;
+      z-index: 10001;
+    }
+    .proxy-floating-panel.active {
+      transform: translateY(0) scale(1);
+      opacity: 1;
+      visibility: visible;
+    }
+    .panel-header {
+      padding: 20px 20px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,0.3);
+    }
+    .panel-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 0;
+      letter-spacing: -0.3px;
+    }
+    .panel-close {
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      padding: 0;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 16px;
+      transition: background 0.2s;
+    }
+    .panel-close:hover {
+      background: rgba(0,0,0,0.05);
+    }
+    .panel-content {
+      padding: 16px 20px 20px;
+      overflow-y: auto;
+      flex: 1;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0,0,0,0.2) transparent;
+    }
+    .panel-content::-webkit-scrollbar {
+      width: 6px;
+    }
+    .panel-content::-webkit-scrollbar-thumb {
+      background: rgba(0,0,0,0.2);
+      border-radius: 3px;
+    }
+
+    /* iOS风格通知 */
+    .ios-notification {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-100px);
+      background: var(--glass-bg-light);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-radius: 40px;
+      border: 1px solid var(--glass-border);
+      box-shadow: var(--glass-shadow);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      pointer-events: none;
+      transition: transform 0.4s cubic-bezier(0.2, 0.9, 0.4, 1);
+      z-index: 10002;
+      max-width: 90vw;
+      white-space: nowrap;
+    }
+    .ios-notification.show {
+      transform: translateX(-50%) translateY(0);
+    }
+    .notification-icon {
+      font-size: 22px;
+    }
+    .notification-text {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    /* 批量进度条 */
+    .batch-progress-overlay {
+      position: fixed;
+      bottom: 100px;
+      right: 24px;
+      width: 320px;
+      background: var(--glass-bg-light);
+      backdrop-filter: blur(30px) saturate(180%);
+      -webkit-backdrop-filter: blur(30px) saturate(180%);
+      border-radius: var(--radius-medium);
+      border: 1px solid var(--glass-border);
+      box-shadow: var(--glass-shadow);
+      padding: 16px;
+      pointer-events: all;
+      transform: translateY(20px) scale(0.95);
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.3s ease;
+      z-index: 10003;
+    }
+    .batch-progress-overlay.active {
+      transform: translateY(0) scale(1);
+      opacity: 1;
+      visibility: visible;
+    }
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .progress-bar {
+      height: 8px;
+      background: rgba(255,255,255,0.3);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--accent-blue);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    .progress-actions {
+      display: flex;
+      justify-content: flex-end;
+    }
+    .cancel-btn {
+      background: var(--glass-bg-medium);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      padding: 6px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .cancel-btn:hover {
+      background: rgba(255,255,255,0.5);
+    }
+
+    /* 面板内卡片样式 */
+    .status-card, .register-card, .batch-card, .environment-card, .accounts-card, .settings-card, .error-card {
+      background: rgba(255,255,255,0.2);
+      border-radius: var(--radius-medium);
+      padding: 16px;
+      margin-bottom: 16px;
+      border: 1px solid var(--glass-border);
+      backdrop-filter: blur(5px);
+    }
+    .status-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .status-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      font-weight: 600;
+      background: var(--glass-bg-medium);
+    }
+    .status-icon.success {
+      color: var(--accent-green);
+    }
+    .status-icon.warning {
+      color: var(--accent-orange);
+    }
+    .status-body p {
+      margin: 6px 0;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    .timestamp {
+      font-size: 12px;
+      color: #8e8e93;
+      margin-top: 8px;
+    }
+    .button-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .ios-button {
+      background: var(--glass-bg-medium);
+      border: 1px solid var(--glass-border);
+      border-radius: 30px;
+      padding: 12px 8px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.2s;
+      backdrop-filter: blur(5px);
+      width: 100%;
+    }
+    .ios-button.primary {
+      background: var(--accent-blue);
+      color: white;
+      border-color: rgba(255,255,255,0.3);
+    }
+    .ios-button.warning {
+      background: var(--accent-orange);
+      color: white;
+    }
+    .ios-button.secondary {
+      background: var(--glass-bg-medium);
+    }
+    .ios-button.large {
+      padding: 14px 16px;
+      font-size: 16px;
+    }
+    .ios-button:hover {
+      transform: scale(1.02);
+      filter: brightness(1.05);
+    }
+    .quick-actions {
+      display: flex;
+      justify-content: space-around;
+      margin-top: 8px;
+    }
+    .quick-action {
+      background: none;
+      border: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      padding: 8px;
+      border-radius: 12px;
+      transition: background 0.2s;
+    }
+    .quick-action span {
+      font-size: 22px;
+    }
+    .quick-action:hover {
+      background: rgba(255,255,255,0.2);
+    }
+
+    /* 表单元素 */
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-group label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .ios-input, .ios-select {
+      width: 100%;
+      padding: 12px 16px;
+      background: var(--glass-bg-medium);
+      border: 1px solid var(--glass-border);
+      border-radius: 30px;
+      font-size: 14px;
+      color: var(--text-primary);
+      outline: none;
+      backdrop-filter: blur(5px);
+    }
+    .ios-input:focus, .ios-select:focus {
+      border-color: var(--accent-blue);
+    }
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+    }
+    .checkbox-custom {
+      width: 20px;
+      height: 20px;
+      background: var(--glass-bg-medium);
+      border: 1px solid var(--glass-border);
+      border-radius: 6px;
+      display: inline-block;
+      position: relative;
+    }
+    input[type="checkbox"] {
+      display: none;
+    }
+    input[type="checkbox"]:checked + .checkbox-custom::after {
+      content: "✓";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: var(--accent-blue);
+      font-weight: bold;
+    }
+
+    /* 账户列表 */
+    .accounts-list {
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .account-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px;
+      background: var(--glass-bg-medium);
+      border-radius: var(--radius-small);
+      margin-bottom: 8px;
+    }
+    .account-id {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .account-status {
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(0,0,0,0.05);
+    }
+    .account-status.active {
+      color: var(--accent-green);
+    }
+    .account-status.inactive {
+      color: var(--text-secondary);
+    }
+    .account-details {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    .account-actions .action-btn {
+      background: none;
+      border: none;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px 8px;
+    }
+    .accounts-stats {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--glass-border);
+    }
+    .stat {
+      text-align: center;
+    }
+    .stat-label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .stat-value {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    /* 环境检查结果 */
+    .environment-result {
+      padding: 12px;
+      margin: 8px 0;
+      border-radius: var(--radius-small);
+      background: var(--glass-bg-medium);
+    }
+    .environment-result.success {
+      border-left: 4px solid var(--accent-green);
+    }
+    .environment-result.error {
+      border-left: 4px solid var(--accent-red);
+    }
+    .result-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* 加载动画 */
+    .loading-state {
+      text-align: center;
+      padding: 20px;
+    }
+    .spinner {
+      width: 30px;
+      height: 30px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-top-color: var(--accent-blue);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 10px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* 空状态 */
+    .empty-state {
+      text-align: center;
+      padding: 30px 20px;
+      color: var(--text-secondary);
+    }
+    .empty-icon {
+      font-size: 48px;
+      margin-bottom: 10px;
+      opacity: 0.5;
+    }
+
+    /* 响应式 */
+    @media (max-width: 480px) {
+      .proxy-floating-panel {
+        right: 12px;
+        left: 12px;
+        width: auto;
+        bottom: 80px;
+      }
+      .batch-progress-overlay {
+        right: 12px;
+        left: 12px;
+        width: auto;
+      }
+    }
   `;
 }
 
@@ -2104,20 +2580,18 @@ function generateControlPanelHTMLStructure() {
     <!-- 悬浮窗 -->
     <div class="proxy-floating-panel" id="proxy-panel">
       <div class="panel-header">
-        <h3 class="panel-title">🤖 账户管理面板</h3>
+        <h3 class="panel-title">🤖 账户管理</h3>
         <button class="panel-close" id="panel-close-btn">×</button>
       </div>
       <div class="panel-content" id="panel-content">
-        <!-- 动态内容 -->
+        <!-- 动态内容会由JavaScript填充 -->
       </div>
     </div>
     
-    <!-- iOS灵动岛通知 -->
+    <!-- iOS风格通知 -->
     <div class="ios-notification" id="proxy-notification">
-      <div class="notification-content">
-        <div class="notification-icon">🔔</div>
-        <div class="notification-text" id="notification-text">系统就绪</div>
-      </div>
+      <div class="notification-icon" id="notification-icon">🔔</div>
+      <div class="notification-text" id="notification-text">系统就绪</div>
     </div>
     
     <!-- 批量注册进度 -->
@@ -2140,7 +2614,7 @@ function generateControlPanelHTMLStructure() {
 
 function generateControlPanelJavaScript(url, env) {
   return `
-    // 控制面板JavaScript - 超过500行
+    // 控制面板JavaScript - 完整功能
     (function() {
       'use strict';
       
@@ -2148,10 +2622,8 @@ function generateControlPanelJavaScript(url, env) {
       const state = {
         currentPanel: 'status',
         batchRunning: false,
-        batchProgress: { current: 0, total: 0 },
-        notifications: [],
-        userPreferences: {},
-        networkMonitor: null
+        batchProgress: { current: 0, total: 0, running: false },
+        notifications: []
       };
       
       // DOM元素
@@ -2161,6 +2633,7 @@ function generateControlPanelJavaScript(url, env) {
         closeBtn: document.getElementById('panel-close-btn'),
         content: document.getElementById('panel-content'),
         notification: document.getElementById('proxy-notification'),
+        notificationIcon: document.getElementById('notification-icon'),
         notificationText: document.getElementById('notification-text'),
         batchProgress: document.getElementById('batch-progress'),
         progressCount: document.getElementById('progress-count'),
@@ -2175,17 +2648,18 @@ function generateControlPanelJavaScript(url, env) {
         // 绑定事件
         bindEvents();
         
-        // 加载初始状态
+        // 加载初始状态面板
         loadPanel('status');
         
         // 显示主按钮（延迟确保页面加载完成）
         setTimeout(() => {
           elements.mainBtn.style.opacity = '1';
+          elements.mainBtn.style.transform = 'scale(1)';
           showNotification('✅', '控制面板已就绪');
         }, 1000);
         
-        // 初始化数据库
-        fetch('/_proxy/db-init').catch(console.error);
+        // 初始化数据库（可选）
+        fetch('/_proxy/db-init').catch(() => {});
       }
       
       // 事件绑定
@@ -2623,7 +3097,8 @@ function generateControlPanelJavaScript(url, env) {
       
       // 通知系统
       function showNotification(icon, message, duration = 3000) {
-        elements.notificationText.innerHTML = \`\${icon} \${message}\`;
+        elements.notificationIcon.textContent = icon;
+        elements.notificationText.textContent = message;
         elements.notification.classList.add('show');
         
         setTimeout(() => {
@@ -2635,6 +3110,7 @@ function generateControlPanelJavaScript(url, env) {
       function updateBatchProgress(progress) {
         if (!progress) return;
         
+        state.batchProgress = progress;
         const percent = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
         elements.progressCount.textContent = \`\${progress.current}/\${progress.total}\`;
         elements.progressFill.style.width = \`\${percent}%\`;
@@ -2649,7 +3125,8 @@ function generateControlPanelJavaScript(url, env) {
       function cancelBatch() {
         if (confirm('确定要取消批量注册吗？')) {
           state.batchRunning = false;
-          elements.batchProgress.classList.remove('active');
+          state.batchProgress.running = false;
+          updateBatchProgress(state.batchProgress);
           showNotification('⏹️', '批量注册已取消');
         }
       }
@@ -2731,11 +3208,13 @@ function generateControlPanelJavaScript(url, env) {
         
         showNotification('🚀', \`开始批量注册 \${count} 个账户\`, 3000);
         
-        // 模拟批量注册进度
+        // 模拟批量注册进度（实际应该调用后端API）
+        // 此处为了演示，使用前端模拟，实际应调用 /_proxy/batch-register
         const simulateBatch = () => {
           if (!state.batchRunning || state.batchProgress.current >= state.batchProgress.total) {
             state.batchRunning = false;
-            updateBatchProgress({ ...state.batchProgress, running: false });
+            state.batchProgress.running = false;
+            updateBatchProgress(state.batchProgress);
             
             if (state.batchProgress.current >= state.batchProgress.total) {
               showNotification('✅', \`批量注册完成！共 \${state.batchProgress.total} 个账户\`, 5000);
