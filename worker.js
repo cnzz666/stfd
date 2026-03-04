@@ -388,7 +388,7 @@ function injectControlPanel(html, url) {
         function moveHandler(moveE) {
           let currentY = moveE.type === 'touchmove' ? moveE.touches[0].clientY : moveE.clientY;
           let delta = currentY - startY;
-          panel.style.transform = `translateY(${delta}px)`;
+          panel.style.transform = 'translateY(' + delta + 'px)';
         }
         
         function endHandler() {
@@ -574,15 +574,15 @@ function injectControlPanel(html, url) {
       
       // Cookie辅助函数
       function getCookie(name) {
-        const value = `; ${document.cookie}`;
-        const parts = value.split(`; ${name}=`);
+        const value = '; ' + document.cookie;
+        const parts = value.split('; ' + name + '=');
         if (parts.length === 2) return parts.pop().split(';').shift();
       }
       
       function setCookie(name, value, days) {
         const date = new Date();
         date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
-        document.cookie = `${name}=${value};expires=${date.toUTCString()};path=/`;
+        document.cookie = name + '=' + value + ';expires=' + date.toUTCString() + ';path=/';
       }
     </script>
     
