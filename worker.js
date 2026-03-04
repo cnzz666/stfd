@@ -1,7 +1,7 @@
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
-// worker.js - 完整代理版本，注入辅助功能
+// worker.js - 修复版本，绕过积分不足，优化样式，悬浮窗可隐藏，底部中间触发
 var worker_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -57,13 +57,13 @@ async function processProxyResponse(response, originalRequest, url) {
       console.error("HTML注入失败:", error);
       return response;
     }
-  } else if (contentType.includes("application/json")) {
-    // 拦截JSON响应进行修改
-    const jsonBody = await clonedResponse.json();
-    const modifiedBody = modifyJsonResponse(url.pathname, jsonBody);
+  } else if (contentType.includes("application/json") || contentType.includes("text/event-stream")) {
+    // 拦截JSON或event-stream响应进行修改
+    const bodyText = await clonedResponse.text();
+    const modifiedBody = modifyResponseBody(url.pathname, bodyText, contentType);
     const newHeaders = new Headers(response.headers);
     newHeaders.set("Access-Control-Allow-Origin", "*");
-    return new Response(JSON.stringify(modifiedBody), {
+    return new Response(modifiedBody, {
       status: response.status,
       headers: newHeaders
     });
@@ -86,46 +86,64 @@ async function processProxyResponse(response, originalRequest, url) {
 }
 __name(processProxyResponse, "processProxyResponse");
 
-// ==================== 修改JSON响应 ====================
-function modifyJsonResponse(pathname, body) {
+// ==================== 修改响应体 ====================
+function modifyResponseBody(pathname, body, contentType) {
   if (pathname.includes("/api/heartbeat")) {
     // 始终返回ok，绕过过期检查
-    return { message: "ok" };
+    return '{"message":"ok"}';
   } else if (pathname.includes("/api/me")) {
     // 修改用户数据：无限额度、VIP等级
-    if (body.credit !== undefined) {
-      body.credit = 999999; // 无限额度
+    let json;
+    try {
+      json = JSON.parse(body);
+    } catch {
+      return body;
     }
-    if (body.user) {
-      body.user.role = "vip"; // 修改角色为VIP
-      if (!body.user.metadata) body.user.metadata = {};
-      body.user.metadata.vip_level = 99; // 最高VIP等级
-      body.user.metadata.credit_locked = true; // 锁死额度不扣除
+    if (json.credit !== undefined) {
+      json.credit = 999999; // 无限额度
     }
-    return body;
+    if (json.user) {
+      json.user.role = "vip"; // 修改角色为VIP
+      if (!json.user.metadata) json.user.metadata = {};
+      json.user.metadata.vip_level = 99; // 最高VIP等级
+      json.user.metadata.credit_locked = true; // 锁死额度不扣除
+    }
+    return JSON.stringify(json);
   } else if (pathname.includes("/api/auth/token") || pathname.includes("/api/auth/anonymous-sign-in")) {
     // 修改token响应：无限过期时间
-    if (body.expires_at) {
-      body.expires_at = Date.now() + 1000 * 60 * 60 * 24 * 365; // 一年后过期
+    let json;
+    try {
+      json = JSON.parse(body);
+    } catch {
+      return body;
     }
-    if (body.user) {
-      body.user.role = "vip";
-      body.user.metadata = body.user.metadata || {};
-      body.user.metadata.vip_level = 99;
+    if (json.expires_at) {
+      json.expires_at = Date.now() + 1000 * 60 * 60 * 24 * 365; // 一年后过期
     }
-    return body;
+    if (json.user) {
+      json.user.role = "vip";
+      json.user.metadata = json.user.metadata || {};
+      json.user.metadata.vip_level = 99;
+    }
+    return JSON.stringify(json);
+  } else if (pathname.includes("/api/trpc/chat.getQuotas")) {
+    // 绕过积分不足，修改为无限积分
+    return '{"result":{"data":{"json":{"remaining":999999}}}}';
+  } else if (contentType.includes("text/event-stream") && body.includes("upgrade_needed")) {
+    // 替换积分不足错误为正常响应
+    return body.replace(/{"type":"error","data":{"classification":"upgrade_needed","message":"积分不足"}}/g, '{"type":"success","data":{"message":"积分充足"}}');
   }
   return body; // 其他响应不变
 }
-__name(modifyJsonResponse, "modifyJsonResponse");
+__name(modifyResponseBody, "modifyResponseBody");
 
 // ==================== 注入控制面板 ====================
 function injectControlPanel(html, url) {
   const panelHTML = `
-    <!-- 科技化控制面板，像iPhone 17灵动岛，丝滑动画，适合手机端 -->
+    <!-- 科技化控制面板，像iPhone 17灵动岛，丝滑动画，适合手机端，优化样式 -->
     <div id="control-panel-container" style="
       position: fixed;
-      top: 0;
+      bottom: 0;
       left: 50%;
       transform: translateX(-50%);
       z-index: 999999;
@@ -137,48 +155,61 @@ function injectControlPanel(html, url) {
       pointer-events: none;
     ">
       <div id="control-panel" style="
-        background: rgba(0, 0, 0, 0.8);
-        backdrop-filter: blur(20px) saturate(180%);
-        -webkit-backdrop-filter: blur(20px) saturate(180%);
-        border-radius: 0 0 20px 20px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-        padding: 12px;
+        background: rgba(0, 0, 0, 0.9);
+        backdrop-filter: blur(24px) saturate(200%);
+        -webkit-backdrop-filter: blur(24px) saturate(200%);
+        border-radius: 20px 20px 0 0;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.3);
+        padding: 16px;
         color: #ffffff;
         pointer-events: auto;
       ">
+        <!-- 关闭按钮 -->
+        <button id="close-panel" style="
+          position: absolute;
+          top: 8px;
+          right: 8px;
+          background: none;
+          border: none;
+          color: #ffffff;
+          font-size: 20px;
+          cursor: pointer;
+          transition: all 0.2s;
+        ">&times;</button>
+        
         <!-- 拖拽手柄，像灵动岛 -->
         <div id="panel-handle" style="
           width: 40px;
           height: 5px;
-          background: rgba(255, 255, 255, 0.3);
+          background: rgba(255, 255, 255, 0.4);
           border-radius: 2.5px;
-          margin: 0 auto 8px;
+          margin: 0 auto 12px;
           cursor: grab;
         "></div>
         
         <!-- 标题 -->
         <h3 style="
-          margin: 0 0 12px;
-          font-size: 17px;
+          margin: 0 0 16px;
+          font-size: 18px;
           font-weight: 600;
           text-align: center;
           color: #ffffff;
-        ">辅助控制中心</h3>
+        ">魅魔科技中心</h3>
         
         <!-- 功能按钮网格 -->
         <div style="
           display: grid;
           grid-template-columns: repeat(2, 1fr);
-          gap: 8px;
-          margin-bottom: 12px;
+          gap: 12px;
+          margin-bottom: 16px;
         ">
           <button onclick="toggleUnlimitedCredit()" style="
-            background: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.15);
             border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
+            border-radius: 14px;
+            padding: 14px;
+            font-size: 16px;
             font-weight: 500;
             color: #ffffff;
             cursor: pointer;
@@ -187,11 +218,11 @@ function injectControlPanel(html, url) {
           ">无限额度</button>
           
           <button onclick="setVipLevel()" style="
-            background: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.15);
             border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
+            border-radius: 14px;
+            padding: 14px;
+            font-size: 16px;
             font-weight: 500;
             color: #ffffff;
             cursor: pointer;
@@ -200,11 +231,11 @@ function injectControlPanel(html, url) {
           ">修改VIP</button>
           
           <button onclick="consumeTokens()" style="
-            background: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.15);
             border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
+            border-radius: 14px;
+            padding: 14px;
+            font-size: 16px;
             font-weight: 500;
             color: #ffffff;
             cursor: pointer;
@@ -213,11 +244,11 @@ function injectControlPanel(html, url) {
           ">消耗Token</button>
           
           <button onclick="recoverToken()" style="
-            background: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.15);
             border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
+            border-radius: 14px;
+            padding: 14px;
+            font-size: 16px;
             font-weight: 500;
             color: #ffffff;
             cursor: pointer;
@@ -226,11 +257,11 @@ function injectControlPanel(html, url) {
           ">恢复Token</button>
           
           <button onclick="lockCredit()" style="
-            background: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.15);
             border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
+            border-radius: 14px;
+            padding: 14px;
+            font-size: 16px;
             font-weight: 500;
             color: #ffffff;
             cursor: pointer;
@@ -239,11 +270,11 @@ function injectControlPanel(html, url) {
           ">锁死额度</button>
           
           <button onclick="detectBypass()" style="
-            background: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.15);
             border: none;
-            border-radius: 12px;
-            padding: 12px;
-            font-size: 15px;
+            border-radius: 14px;
+            padding: 14px;
+            font-size: 16px;
             font-weight: 500;
             color: #ffffff;
             cursor: pointer;
@@ -254,55 +285,63 @@ function injectControlPanel(html, url) {
         
         <!-- 状态显示 -->
         <div id="status-display" style="
-          background: rgba(255, 255, 255, 0.05);
-          border-radius: 12px;
-          padding: 12px;
-          font-size: 14px;
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 14px;
+          padding: 14px;
+          font-size: 15px;
           text-align: center;
-          margin-bottom: 12px;
+          margin-bottom: 16px;
         ">状态: 正常</div>
         
         <!-- VIP等级输入 -->
-        <div id="vip-input" style="display: none; margin-bottom: 12px;">
+        <div id="vip-input" style="display: none; margin-bottom: 16px;">
           <input type="number" id="vip-level" value="99" min="1" max="99" style="
             width: 100%;
-            padding: 8px;
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            background: rgba(255, 255, 255, 0.1);
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            background: rgba(255, 255, 255, 0.15);
             color: #ffffff;
-            font-size: 15px;
+            font-size: 16px;
             box-sizing: border-box;
           ">
         </div>
         
         <!-- 消耗数量输入 -->
-        <div id="consume-input" style="display: none; margin-bottom: 12px;">
+        <div id="consume-input" style="display: none; margin-bottom: 16px;">
           <input type="number" id="consume-count" value="10" min="1" max="100" style="
             width: 100%;
-            padding: 8px;
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            background: rgba(255, 255, 255, 0.1);
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            background: rgba(255, 255, 255, 0.15);
             color: #ffffff;
-            font-size: 15px;
+            font-size: 16px;
             box-sizing: border-box;
           ">
         </div>
       </div>
     </div>
     
-    <!-- 触发器，像灵动岛感应区 -->
-    <div id="panel-trigger-area" style="
+    <!-- 触发按钮，底部中间 -->
+    <button id="panel-trigger" style="
       position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 44px; /* iPhone顶部高度 */
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
       z-index: 999998;
-      background: transparent;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(20px);
+      border: none;
+      border-radius: 20px;
+      padding: 10px 20px;
+      font-size: 16px;
+      font-weight: 500;
+      color: #ffffff;
       cursor: pointer;
-    "></div>
+      transition: all 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    ">魅魔科技</button>
     
     <script>
       let panelVisible = false;
@@ -317,26 +356,24 @@ function injectControlPanel(html, url) {
         interceptNetworkRequests();
       });
       
-      // 设置交互：触屏滑动展开，像灵动岛
+      // 设置交互：点击触发按钮打开/关闭，触屏滑动
       function setupPanelInteractions() {
-        const triggerArea = document.getElementById('panel-trigger-area');
+        const triggerBtn = document.getElementById('panel-trigger');
+        const closeBtn = document.getElementById('close-panel');
         const panel = document.getElementById('control-panel-container');
         const handle = document.getElementById('panel-handle');
         
-        // 鼠标事件
-        triggerArea.addEventListener('mousedown', () => togglePanel());
-        handle.addEventListener('mousedown', startDrag);
+        triggerBtn.addEventListener('click', togglePanel);
+        closeBtn.addEventListener('click', hidePanel);
         
         // 触屏事件
-        triggerArea.addEventListener('touchstart', (e) => {
+        panel.addEventListener('touchstart', (e) => {
           touchStartY = e.touches[0].clientY;
         });
-        triggerArea.addEventListener('touchend', (e) => {
+        panel.addEventListener('touchend', (e) => {
           touchEndY = e.changedTouches[0].clientY;
-          if (touchEndY - touchStartY > 50) {
+          if (touchStartY - touchEndY > 50) {
             hidePanel();
-          } else if (touchStartY - touchEndY > 50) {
-            showPanel();
           }
         });
         
@@ -351,7 +388,7 @@ function injectControlPanel(html, url) {
         function moveHandler(moveE) {
           let currentY = moveE.type === 'touchmove' ? moveE.touches[0].clientY : moveE.clientY;
           let delta = currentY - startY;
-          panel.style.transform = \`translateY(\${delta}px)\`;
+          panel.style.transform = `translateY(${delta}px)`;
         }
         
         function endHandler() {
@@ -381,7 +418,7 @@ function injectControlPanel(html, url) {
       function hidePanel() {
         if (!panelVisible) return;
         const panel = document.getElementById('control-panel-container');
-        panel.style.transform = 'translate(-50%, -100%)';
+        panel.style.transform = 'translate(-50%, 100%)';
         panel.style.opacity = '0';
         panelVisible = false;
       }
@@ -407,7 +444,7 @@ function injectControlPanel(html, url) {
       function setVipLevel() {
         const inputDiv = document.getElementById('vip-input');
         inputDiv.style.display = inputDiv.style.display === 'none' ? 'block' : 'none';
-        if (inputDiv.style.display === 'block') return;
+        if (inputDiv.style.display === 'none') return;
         
         const level = parseInt(document.getElementById('vip-level').value);
         try {
@@ -432,7 +469,7 @@ function injectControlPanel(html, url) {
       async function consumeTokens() {
         const inputDiv = document.getElementById('consume-input');
         inputDiv.style.display = inputDiv.style.display === 'none' ? 'block' : 'none';
-        if (inputDiv.style.display === 'block') return;
+        if (inputDiv.style.display === 'none') return;
         
         const count = parseInt(document.getElementById('consume-count').value);
         try {
@@ -499,7 +536,7 @@ function injectControlPanel(html, url) {
         }
       }
       
-      // 拦截网络请求，前端绕过
+      // 拦截网络请求，前端绕过积分不足
       function interceptNetworkRequests() {
         const originalFetch = window.fetch;
         window.fetch = async function(url, options) {
@@ -523,6 +560,13 @@ function injectControlPanel(html, url) {
               data.user.metadata.vip_level = 99;
             }
             return new Response(JSON.stringify(data), { status: 200, headers: resp.headers });
+          } else if (url.includes('/api/trpc/chat.getQuotas')) {
+            return new Response(JSON.stringify({ result: { data: { json: { remaining: 999999 } } } }), { status: 200 });
+          } else if (url.includes('/api/chat') && options && options.method === 'POST') {
+            const resp = await originalFetch(url, options);
+            let bodyText = await resp.text();
+            bodyText = bodyText.replace(/{"type":"error","data":{"classification":"upgrade_needed","message":"积分不足"}}/g, '{"type":"success","data":{"message":"积分充足"}}');
+            return new Response(bodyText, { status: 200, headers: resp.headers });
           }
           return originalFetch(url, options);
         };
@@ -530,20 +574,20 @@ function injectControlPanel(html, url) {
       
       // Cookie辅助函数
       function getCookie(name) {
-        const value = \`; \${document.cookie}\`;
-        const parts = value.split(\`; \${name}=\`);
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
         if (parts.length === 2) return parts.pop().split(';').shift();
       }
       
       function setCookie(name, value, days) {
         const date = new Date();
         date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
-        document.cookie = \`\${name}=\${value};expires=\${date.toUTCString()};path=/\`;
+        document.cookie = `${name}=${value};expires=${date.toUTCString()};path=/`;
       }
     </script>
     
     <style>
-      /* 丝滑动画和触感 */
+      /* 丝滑动画和触感，优化样式 */
       #control-panel-container {
         transition: transform 0.3s cubic-bezier(0.25, 0.1, 0.25, 1), opacity 0.3s;
       }
@@ -552,9 +596,18 @@ function injectControlPanel(html, url) {
         touch-action: manipulation; /* 优化触屏 */
       }
       
+      button:hover {
+        background: rgba(255, 255, 255, 0.25) !important;
+      }
+      
       button:active {
-        background: rgba(255, 255, 255, 0.2) !important;
+        background: rgba(255, 255, 255, 0.3) !important;
         transform: scale(0.98);
+      }
+      
+      #panel-trigger:hover {
+        background: rgba(0, 0, 0, 0.9);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
       }
       
       @media (max-width: 768px) {
@@ -565,7 +618,13 @@ function injectControlPanel(html, url) {
         }
         
         #control-panel {
-          border-radius: 0 0 20px 20px;
+          border-radius: 20px 20px 0 0;
+        }
+        
+        #panel-trigger {
+          bottom: 10px;
+          padding: 8px 16px;
+          font-size: 14px;
         }
       }
       
