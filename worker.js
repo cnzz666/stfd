@@ -1,5 +1,6 @@
 /**
- * 电子魅魔 - 终极科研核心 (V4.1 逻辑优化版)
+ * 电子魅魔 - 终极科研核心 (V4.2 修复版)
+ * 修复登录、权限控制、Cookie管理等核心问题
  */
 
 const TARGET_URL = "https://www.xn--i8s951di30azba.com";
@@ -80,6 +81,8 @@ const INJECT_SCRIPT = `
             input { background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; width: 60px; }
             button.action-btn { background: #0a84ff; border: none; color: #fff; padding: 8px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-top:5px; }
             button.reset-btn { background: #444; border: none; color: #eee; padding: 6px; border-radius: 6px; cursor: pointer; font-size: 11px; }
+            textarea { background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; width: 100%; resize: vertical; font-size: 12px; }
+            .cookie-area { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 
             /* 弹窗样式 */
             #first-visit-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 2147483647; }
@@ -97,12 +100,13 @@ const INJECT_SCRIPT = `
             </div>
             <div class="full-content">
                 <div class="header">
-                    <h3>科技辅助核心 V4.1</h3>
+                    <h3>科技辅助核心 V4.2</h3>
                     <button class="close-btn" id="close">✕</button>
                 </div>
                 <div class="tab-container">
                     <div class="tab active" id="tab-log">实时日志</div>
                     <div class="tab" id="tab-ctrl">属性控制</div>
+                    <div class="tab" id="tab-cookie">Cookie</div>
                 </div>
                 <div class="scroll-area" id="log-display"></div>
                 <div class="control-panel" id="ctrl-display" style="display:none;">
@@ -117,6 +121,13 @@ const INJECT_SCRIPT = `
                     <button class="action-btn" id="save-cfg">应用并重载状态</button>
                     <button class="reset-btn" id="reset-cfg">重置默认设置</button>
                     <p style="font-size:10px; color:#666; margin-top:10px;">* 修改后系统将自动拦截后续请求并伪造响应</p>
+                </div>
+                <div class="control-panel cookie-area" id="cookie-display" style="display:none;">
+                    <span style="font-size:12px;">当前Cookie</span>
+                    <textarea id="cookie-view" rows="3" readonly></textarea>
+                    <span style="font-size:12px;">注入Cookie (格式: key=value; key2=value2)</span>
+                    <textarea id="cookie-input" rows="3" placeholder="粘贴Cookie字符串..."></textarea>
+                    <button class="action-btn" id="apply-cookie">注入并刷新</button>
                 </div>
             </div>
         </div>
@@ -154,22 +165,41 @@ const INJECT_SCRIPT = `
         };
 
         // 切换标签
-        shadow.getElementById('tab-log').onclick = () => {
-            shadow.getElementById('log-display').style.display = 'block';
-            shadow.getElementById('ctrl-display').style.display = 'none';
-            shadow.getElementById('tab-log').classList.add('active');
-            shadow.getElementById('tab-ctrl').classList.remove('active');
+        function switchTab(tabId) {
+            ['log-display','ctrl-display','cookie-display'].forEach(id => shadow.getElementById(id).style.display = 'none');
+            ['tab-log','tab-ctrl','tab-cookie'].forEach(id => shadow.getElementById(id).classList.remove('active'));
+            shadow.getElementById(tabId).style.display = tabId==='log-display'?'block':'flex';
+            shadow.getElementById('tab-'+tabId.split('-')[0]).classList.add('active');
+        }
+        shadow.getElementById('tab-log').onclick = () => switchTab('log-display');
+        shadow.getElementById('tab-ctrl').onclick = () => switchTab('ctrl-display');
+        shadow.getElementById('tab-cookie').onclick = () => {
+            switchTab('cookie-display');
+            // 刷新当前cookie显示
+            shadow.getElementById('cookie-view').value = document.cookie;
         };
-        shadow.getElementById('tab-ctrl').onclick = () => {
-            shadow.getElementById('log-display').style.display = 'none';
-            shadow.getElementById('ctrl-display').style.display = 'flex';
-            shadow.getElementById('tab-ctrl').classList.add('active');
-            shadow.getElementById('tab-log').classList.remove('active');
+
+        // 应用Cookie注入
+        shadow.getElementById('apply-cookie').onclick = () => {
+            const cookieStr = shadow.getElementById('cookie-input').value.trim();
+            if (cookieStr) {
+                // 简单拆分并设置cookie
+                cookieStr.split(';').forEach(pair => {
+                    const eqIdx = pair.indexOf('=');
+                    if (eqIdx > 0) {
+                        const key = pair.substring(0, eqIdx).trim();
+                        const val = pair.substring(eqIdx+1).trim();
+                        document.cookie = key + '=' + val + ';path=/';
+                    }
+                });
+                addLog('COOKIE', '已注入Cookie，页面将刷新');
+                setTimeout(() => location.reload(), 500);
+            }
         };
 
         // 保存并应用配置
         shadow.getElementById('save-cfg').onclick = (e) => {
-            e.stopPropagation(); // 防止冒泡
+            e.stopPropagation();
             techState.vipLevel = parseInt(shadow.getElementById('cfg-vip').value);
             techState.credits = parseInt(shadow.getElementById('cfg-credits').value);
             techState.enabled = true; // 触发应用时强制开启功能
@@ -225,15 +255,29 @@ const INJECT_SCRIPT = `
         addLog('SYSTEM', '当前处于安全模式（未注入）');
     }
     
-    // 劫持 Fetch
+    // 劫持 Fetch（注入启用标记并添加header）
     const originalFetch = window.fetch;
     window.fetch = function() {
+        const input = arguments[0];
+        const init = arguments[1] || {};
+        const url = typeof input === 'string' ? input : input.url;
         if (!techState.enabled) return originalFetch.apply(this, arguments);
-        const url = arguments[0];
+        
+        // 添加启用标记头
+        let headers = new Headers(init.headers || {});
+        headers.set('x-tech-enabled', '1');
+        
+        // 确保即使传入Request也能正常包装
+        if (input instanceof Request) {
+            const modified = new Request(input, { headers });
+            return originalFetch.call(this, modified);
+        }
+        
+        const newInit = { ...init, headers };
         if (typeof url === 'string' && (url.includes('/api/') || url.includes('/trpc/'))) {
             addLog('INTERCEPT', '正在拦截: ' + url.split('?')[0].split('/').pop());
         }
-        return originalFetch.apply(this, arguments);
+        return originalFetch.call(this, url, newInit);
     };
 })();
 `;
@@ -263,35 +307,39 @@ export default {
 
         const contentType = respHeaders.get("content-type") || "";
 
-        // 1. HTML 注入 (始终注入 UI 控制面板，但内部逻辑根据用户同意与否执行)
+        // 1. HTML 注入 (始终注入 UI 控制面板)
         if (contentType.includes("text/html")) {
             let text = await response.text();
             text = text.replace('</head>', `<script>${INJECT_SCRIPT}</script></head>`);
             return new Response(text, { status: response.status, headers: respHeaders });
         }
 
-        // 2. SSE 流式处理 (恢复原始流，不进行错误修改)
+        // 2. SSE 流式处理
         if (contentType.includes("text/event-stream")) {
             return new Response(response.body, { status: 200, headers: respHeaders });
         }
 
-        // 3. JSON 深度篡改 (依赖 Cookie/Header 判断，或由前端脚本控制后续行为)
-        // 注意：Worker 侧无法直接访问 localStorage，这里通过判断 Referer 
-        // 或由前端 script 注入后在浏览器层面完成主要拦截。
-        if (contentType.includes("application/json") || url.pathname.includes("/api/")) {
+        // 3. JSON 深度篡改 (仅在客户端明确启用且非auth路径时执行)
+        if (contentType.includes("application/json")) {
+            const techEnabled = request.headers.get('x-tech-enabled') === '1';
+            const path = url.pathname.toLowerCase();
+            // 排除登录/注册/验证等关键auth路径
+            const isAuthPath = path.startsWith('/api/auth/') || path.includes('auth.sign') || path.includes('auth.verify');
+            
             try {
                 let text = await response.text();
-                let data = JSON.parse(text);
-                
-                // 此处保持逻辑，但核心逻辑已移至前端脚本 hackAppState
-                if (url.pathname.includes("checkin") || url.pathname.includes("sign")) {
-                    data = { success: true, message: "签到成功", credits: 999999 };
+                if (techEnabled && !isAuthPath) {
+                    let data = JSON.parse(text);
+                    
+                    // 移除错误的 sign 匹配，仅保留明确的签到接口（可按需添加）
+                    data = deepHackJSON(data);
+                    const modified = JSON.stringify(data);
+                    respHeaders.set("content-length", new Blob([modified]).size.toString());
+                    return new Response(modified, { status: 200, headers: respHeaders });
+                } else {
+                    // 未启用或auth路径，原样返回
+                    return new Response(text, { status: response.status, headers: respHeaders });
                 }
-
-                data = deepHackJSON(data);
-                const modified = JSON.stringify(data);
-                respHeaders.set("content-length", new Blob([modified]).size.toString());
-                return new Response(modified, { status: 200, headers: respHeaders });
             } catch (e) {
                 return new Response(response.body, { status: response.status, headers: respHeaders });
             }
